@@ -22,6 +22,12 @@ Thumbs.db
 .env
 *.key
 
+# TritonBench4Modal (local clone, not committed)
+TritonBench4Modal/
+
+# Upstream TritonBench (local clone for data access, not committed)
+TritonBench/
+
 .claude/
 docs/superpowers
 .superpowers/

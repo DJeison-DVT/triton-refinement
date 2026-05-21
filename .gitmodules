@@ -1,0 +1,3 @@
+[submodule "triton_lexeme"]
+	path = triton_lexeme
+	url = https://github.com/DJeison-DVT/triton_lexeme.git
