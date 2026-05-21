@@ -158,15 +158,21 @@ curl http://localhost:8000/v1/completions \
 All experiment runs should happen from WSL2 (for Triton compile/test):
 
 ```bash
-# Smoke test: 5 ops through the full pipeline (from WSL2)
+# Smoke test: 5 ops, single condition (from WSL2)
 python3 scripts/run_experiment.py \
   --model Qwen/Qwen2.5-Coder-7B \
-  --max-iters 5 \
+  --condition refinement \
   --limit 5 \
   --base-url http://localhost:8000/v1
 
-# Evaluate against TritonBench
-modal run TritonBench4Modal/modal_app.py::evaluate_only -- --predictions ./predictions.jsonl
+# Batch mode: all models x conditions x seeds (with resume)
+python3 scripts/run_experiment.py --batch --limit 5
+
+# Batch filtered to one model
+python3 scripts/run_experiment.py --batch --models Qwen/Qwen2.5-Coder-7B --limit 5
+
+# With TritonBench4Modal evaluation (updates op_results.json with real Phase 1/2/3)
+python3 scripts/run_experiment.py --batch --evaluate --limit 5
 ```
 
 ## Directory Layout After Setup
@@ -184,7 +190,13 @@ triton-refinement/
 ├── prompts/
 ├── core/
 ├── adapters/
+├── analysis/              # statistical analysis package
 ├── scripts/
 ├── results/               # gitignored, created during runs
+│   └── {model}_{condition}_seed{seed}/
+│       ├── trajectories/{op}.jsonl
+│       ├── op_results.json
+│       ├── predictions.jsonl
+│       └── summary.json
 └── ...
 ```
