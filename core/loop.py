@@ -412,3 +412,61 @@ def save_trajectory(result: RefinementResult, output_dir: Path) -> Path:
             f.write(json.dumps(record) + "\n")
 
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Per-op outcome extraction
+# ---------------------------------------------------------------------------
+
+
+def build_op_result(result: RefinementResult) -> dict:
+    """Extract per-op outcome summary from a RefinementResult.
+
+    Returns a dict suitable for writing to op_results.json:
+        phase1_compile: True/False/None (None = never attempted, unlikely)
+        phase2_test:    True/False/None (None = skipped, compile never passed)
+        review_approved: True/False/None (None = skipped, test never passed)
+        iterations_used: int
+        repaired: bool (failed on first iteration, passed later)
+        phases_reached: list of stage names that were executed
+        phases_skipped: list of stage names never reached
+        final_status: "pass" or "fail"
+    """
+    compiles = [e for e in result.trajectory if e.stage == "compile"]
+    tests = [e for e in result.trajectory if e.stage == "test"]
+    reviews = [e for e in result.trajectory if e.stage == "review"]
+
+    phase1 = compiles[-1].outcome == "pass" if compiles else None
+    phase2 = tests[-1].outcome == "pass" if tests else None
+    review = reviews[-1].outcome == "pass" if reviews else None
+
+    reached = []
+    if compiles:
+        reached.append("compile")
+    if tests:
+        reached.append("test")
+    if reviews:
+        reached.append("review")
+
+    all_phases = ["compile", "test", "review"]
+    skipped = [p for p in all_phases if p not in reached]
+
+    first_iter_compiles = [e for e in compiles if e.iteration == 1]
+    first_iter_tests = [e for e in tests if e.iteration == 1]
+    first_failed = False
+    if first_iter_compiles and first_iter_compiles[0].outcome == "fail":
+        first_failed = True
+    if first_iter_tests and first_iter_tests[0].outcome == "fail":
+        first_failed = True
+    repaired = first_failed and result.passed
+
+    return {
+        "phase1_compile": phase1,
+        "phase2_test": phase2,
+        "review_approved": review,
+        "iterations_used": result.total_iterations,
+        "repaired": repaired,
+        "phases_reached": reached,
+        "phases_skipped": skipped,
+        "final_status": "pass" if result.passed else "fail",
+    }

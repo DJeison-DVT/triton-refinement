@@ -31,6 +31,12 @@ volume = modal.Volume.from_name(
 )
 
 
+CONDITIONS = {
+    "single-shot": {"max_iterations": 1, "grammar_constrained": True, "pattern_memory": False},
+    "refinement": {"max_iterations": 5, "grammar_constrained": True, "pattern_memory": "inmemory"},
+}
+
+
 @app.function(
     image=experiment_image,
     gpu="T4",
@@ -40,17 +46,14 @@ volume = modal.Volume.from_name(
 def run(
     model: str = "Qwen/Qwen2.5-Coder-7B",
     vllm_url: str = "",
-    max_iters: int = 5,
+    condition: str = "refinement",
     limit: int | None = None,
     seed: int = 42,
-    grammar: bool = True,
-    pattern_memory: str = "inmemory",
 ):
     """Run the refinement experiment on Modal."""
     import sys
     sys.path.insert(0, "/app")
 
-    # Patch dataset paths to use mounted data
     import adapters.dataset as ds
     from pathlib import Path
     ds._DATA_DIR = Path("/data")
@@ -62,7 +65,7 @@ def run(
     from adapters.tritonbench import write_predictions
     from core.grammar import load_grammar
     from core.llm_client import LLMClient
-    from core.loop import generate_with_refinement, save_trajectory
+    from core.loop import generate_with_refinement, save_trajectory, build_op_result
     from core.memory_inmemory import InMemoryPatternMemory
     from prompts import extract_code, test_generator
 
@@ -71,13 +74,18 @@ def run(
     import torch
     torch.manual_seed(seed)
 
+    settings = CONDITIONS[condition]
+    max_iters = settings["max_iterations"]
+    use_grammar = settings["grammar_constrained"]
+    mem_type = settings["pattern_memory"]
+
     client = LLMClient(base_url=vllm_url, model=model, api_key="EMPTY")
     ops = load_ops(limit=limit)
-    ebnf = load_grammar() if grammar else None
-    mem = InMemoryPatternMemory() if pattern_memory == "inmemory" else None
+    ebnf = load_grammar() if use_grammar else None
+    mem = InMemoryPatternMemory() if mem_type == "inmemory" else None
 
     model_short = model.split("/")[-1]
-    run_id = f"{model_short}_seed{seed}_iters{max_iters}"
+    run_id = f"{model_short}_{condition}_seed{seed}"
     output_dir = Path(f"/results/{run_id}")
     traj_dir = output_dir / "trajectories"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -115,14 +123,22 @@ def run(
     pred_path = output_dir / "predictions.jsonl"
     write_predictions(predictions, pred_path)
 
+    op_results = {}
+    for result_item, op in zip(results_list, ops):
+        op_results[op.op_name] = build_op_result(result_item)
+    (output_dir / "op_results.json").write_text(
+        json.dumps(op_results, indent=2), encoding="utf-8",
+    )
+
     n_passed = sum(1 for r in results_list if r.passed)
     summary = {
         "run_id": run_id,
         "model": model,
+        "condition": condition,
         "seed": seed,
         "max_iters": max_iters,
-        "grammar": grammar,
-        "pattern_memory": pattern_memory,
+        "grammar": use_grammar,
+        "pattern_memory": mem_type if mem_type else "none",
         "n_ops": len(results_list),
         "n_passed": n_passed,
         "pass_rate": n_passed / len(results_list) if results_list else 0,
