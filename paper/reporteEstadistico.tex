@@ -1,0 +1,553 @@
+\documentclass[12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{float}
+
+\title{Pre-registro Experimental para Generación de Kernels Triton mediante Refinamiento Iterativo y Decodificación Restringida}
+\author{Equipo Amphitrite}
+\date{2026}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Objetivo Experimental}
+
+El objetivo de este experimento es evaluar si un método de generación de kernels Triton basado en refinamiento iterativo estilo Reflexion y decodificación restringida mediante XGrammar mejora la generación PyTorch $\rightarrow$ Triton frente a generación single-shot tradicional.
+
+El estudio utilizará el benchmark \textbf{TritonBench-T} con 166 operaciones, ejecutado mediante TritonBench4Modal.
+
+Se evaluarán tres modelos coder-specialized de tamaño similar:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.45\textwidth} p{0.35\textwidth}}
+\toprule
+\textbf{Modelo} & \textbf{Parámetros} \\
+\midrule
+Qwen2.5-Coder & 7B \\
+DeepSeek-Coder & 6.7B \\
+CodeGemma & 7B \\
+\bottomrule
+\end{tabular}
+\caption{Modelos evaluados}
+\end{table}
+
+El método propuesto implementa el siguiente ciclo:
+
+\[
+\text{Translator} \rightarrow \text{Validator} \rightarrow \text{Fixer} \rightarrow \text{Validator}
+\]
+
+con un máximo de 5 iteraciones.
+
+El baseline principal será generación single-shot utilizando el mismo modelo, prompt base y configuración general, pero sin refinement loop. En el baseline, el modelo genera una única solución y esta es evaluada directamente por el harness.
+
+La hipótesis central es que el uso de restricciones gramaticales y refinamiento iterativo estará asociado con una mayor tasa de kernels compilables y funcionalmente correctos, al reducir errores sintácticos, estructurales y de validación durante la generación de código Triton.
+
+\section{Hipótesis}
+
+Las hipótesis fueron definidas antes de ejecutar los experimentos para evitar sesgos post-hoc y p-hacking.
+
+\subsection{Hipótesis Principal}
+
+\subsubsection*{Hipótesis Nula ($H_0$)}
+
+No existe diferencia significativa en la tasa de éxito Phase 2 entre generación single-shot y generación con refinement + XGrammar.
+
+\[
+H_0 : p_{phase2}^{single-shot} = p_{phase2}^{refinement}
+\]
+
+\subsubsection*{Hipótesis Alternativa ($H_1$)}
+
+La generación con refinement + XGrammar obtiene una mayor tasa de éxito Phase 2 que la generación single-shot.
+
+\[
+H_1 : p_{phase2}^{refinement} > p_{phase2}^{single-shot}
+\]
+
+\subsection{Hipótesis Secundarias}
+
+\subsubsection*{Compilation Success (Phase 1)}
+
+\[
+H_0 : p_{compile}^{single-shot} = p_{compile}^{refinement}
+\]
+
+\[
+H_1 : p_{compile}^{refinement} > p_{compile}^{single-shot}
+\]
+
+\subsubsection*{Runtime}
+
+\[
+H_0 : \mu_{runtime}^{single-shot} = \mu_{runtime}^{refinement}
+\]
+
+\[
+H_1 : \mu_{runtime}^{refinement} < \mu_{runtime}^{single-shot}
+\]
+
+\subsubsection*{Repair Success}
+
+\[
+H_0 : p_{repair} = 0
+\]
+
+\[
+H_1 : p_{repair} > 0
+\]
+
+donde $p_{repair}$ representa la proporción de operaciones que fallan inicialmente y posteriormente pasan validación después de una o más iteraciones de refinamiento.
+
+\section{Variables Experimentales}
+
+\subsection{Variables Independientes}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.32\textwidth} p{0.58\textwidth}}
+\toprule
+\textbf{Variable} & \textbf{Valores} \\
+\midrule
+Método de generación & Single-shot vs refinement + XGrammar \\
+Modelo LLM & Qwen2.5-Coder-7B, DeepSeek-Coder-6.7B, CodeGemma-7B \\
+Número máximo de iteraciones & 1 para single-shot, 5 para refinement \\
+Prompt utilizado & Translator prompt y fixer prompt \\
+Gramática & EBNF whitelist mediante XGrammar \\
+\bottomrule
+\end{tabular}
+\caption{Variables independientes}
+\end{table}
+
+\subsection{Variables Dependientes}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.42\textwidth} p{0.45\textwidth}}
+\toprule
+\textbf{Variable dependiente} & \textbf{Tipo} \\
+\midrule
+Phase 1 pass rate & Binaria/Bernoulli \\
+Phase 2 pass rate & Binaria/Bernoulli \\
+Phase 3 speedup & Continua \\
+Runtime & Continua \\
+Iteraciones necesarias & Discreta \\
+Repair success rate & Proporción \\
+\bottomrule
+\end{tabular}
+\caption{Variables dependientes}
+\end{table}
+
+\subsection{Variables de Control}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.32\textwidth} p{0.58\textwidth}}
+\toprule
+\textbf{Variable} & \textbf{Control} \\
+\midrule
+Benchmark & TritonBench-T, 166 operaciones \\
+Harness & TritonBench4Modal \\
+Plataforma & Modal \\
+Hardware cloud & Misma clase de GPU por condición experimental \\
+Temperature & 0.0 \\
+Seeds & Fijas y reportadas \\
+Configuración de prompts & Versionada y constante por condición \\
+Configuración EBNF & Misma whitelist gramatical \\
+Max iterations & 5 para refinement \\
+\bottomrule
+\end{tabular}
+\caption{Variables de control}
+\end{table}
+
+\section{Diseño Experimental}
+
+\subsection{Tipo de Diseño}
+
+Se utilizará un diseño \textbf{within-subjects} o pareado, ya que las mismas operaciones del benchmark serán evaluadas bajo todas las condiciones experimentales.
+
+Cada una de las 166 operaciones será evaluada bajo:
+
+\begin{itemize}
+    \item generación single-shot;
+    \item generación con refinement + XGrammar;
+    \item cada uno de los tres modelos evaluados.
+\end{itemize}
+
+Este diseño reduce la variabilidad entre operaciones, ya que cada operación funciona como su propio control. Además, aumenta el poder estadístico frente a un diseño between-subjects, donde diferentes operaciones serían asignadas a diferentes condiciones.
+
+\subsection{Unidad Experimental y Unidad de Análisis}
+
+La unidad experimental será una operación individual del benchmark TritonBench-T.
+
+La unidad de análisis estadístico también será una operación individual del benchmark. Esto evita pseudo-replicación al no tratar múltiples iteraciones del mismo kernel como observaciones independientes. Las iteraciones del refinement loop serán registradas como trayectoria de generación, pero no serán contadas como muestras independientes para las pruebas principales.
+
+\subsection{Comparaciones Planeadas}
+
+Las comparaciones principales serán:
+
+\begin{itemize}
+    \item Qwen2.5-Coder single-shot vs Qwen2.5-Coder refinement + XGrammar.
+    \item DeepSeek-Coder single-shot vs DeepSeek-Coder refinement + XGrammar.
+    \item CodeGemma single-shot vs CodeGemma refinement + XGrammar.
+    \item Promedio agregado de single-shot vs promedio agregado de refinement + XGrammar.
+\end{itemize}
+
+El objetivo principal no es determinar qué modelo es superior en términos absolutos, sino evaluar si el refinement loop con decodificación restringida mejora el desempeño respecto a single-shot dentro de cada modelo.
+
+\subsection{Contrabalanceo}
+
+Para reducir efectos de orden:
+
+\begin{itemize}
+    \item El orden de ejecución de modelos será aleatorizado cuando sea posible.
+    \item Las condiciones baseline/refinement serán alternadas o ejecutadas en bloques balanceados.
+    \item Se registrará el orden de ejecución en los logs experimentales.
+\end{itemize}
+
+Esto busca reducir amenazas asociadas a warm caches, estado del compilador, variaciones temporales del entorno cloud o efectos de calentamiento de GPU.
+
+\subsection{Supuestos Estadísticos}
+
+Las pruebas estadísticas seleccionadas asumen:
+
+\begin{itemize}
+    \item independencia razonable entre operaciones del benchmark;
+    \item observaciones pareadas entre métodos;
+    \item distribución potencialmente no normal para runtime y speedup;
+    \item que las iteraciones internas del refinement loop no se tratan como observaciones independientes.
+\end{itemize}
+
+Debido a posibles desviaciones de normalidad y presencia de outliers, se priorizarán pruebas no paramétricas para métricas continuas.
+
+\section{Métricas}
+
+\subsection{Métrica Principal}
+
+La métrica principal será \textbf{Phase 2 pass rate}, definida como:
+
+\[
+\text{Phase 2 pass rate} =
+\frac{\text{número de kernels que pasan validación funcional}}{\text{número total de kernels evaluados}}
+\]
+
+Esta métrica indica la proporción de kernels generados que no solo compilan, sino que también producen resultados funcionalmente correctos.
+
+\subsection{Métricas Secundarias}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.35\textwidth} p{0.55\textwidth}}
+\toprule
+\textbf{Métrica} & \textbf{Interpretación} \\
+\midrule
+Phase 1 pass rate & Robustez sintáctica y capacidad de compilación \\
+Runtime & Eficiencia temporal del kernel generado \\
+Phase 3 geometric speedup & Rendimiento relativo frente a referencia \\
+Repair success rate & Capacidad correctiva del refinement loop \\
+Iterations to success & Número de iteraciones requeridas para pasar validación \\
+\bottomrule
+\end{tabular}
+\caption{Métricas secundarias}
+\end{table}
+
+Phase 3 speedup será tratado como métrica secundaria exploratoria debido a la alta variabilidad inherente en mediciones de rendimiento GPU. La contribución principal del estudio se evaluará mediante Phase 2 pass rate y Phase 1 pass rate.
+
+\subsection{Distribuciones Esperadas}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.38\textwidth} p{0.48\textwidth}}
+\toprule
+\textbf{Métrica} & \textbf{Distribución esperada} \\
+\midrule
+Compilation pass/fail & Bernoulli \\
+Correctness pass/fail & Bernoulli \\
+Conteo de éxitos por condición & Binomial \\
+Runtime & Continua, potencialmente sesgada \\
+Speedup & Continua, potencialmente log-normal o sesgada \\
+Iteraciones necesarias & Discreta \\
+\bottomrule
+\end{tabular}
+\caption{Distribuciones esperadas}
+\end{table}
+
+Además de significancia estadística, se evaluará significancia práctica mediante tamaños del efecto, diferencias absolutas de pass rate y diferencias relativas de runtime/speedup.
+
+\section{Tamaño del Efecto Esperado}
+
+Para métricas continuas se utilizará Cohen's $d$:
+
+\[
+d = \frac{\mu_1 - \mu_2}{\sigma_{pooled}}
+\]
+
+La interpretación será:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.3\textwidth} p{0.45\textwidth}}
+\toprule
+\textbf{Valor de $d$} & \textbf{Interpretación} \\
+\midrule
+0.2 & Efecto pequeño \\
+0.5 & Efecto mediano \\
+0.8 & Efecto grande \\
+\bottomrule
+\end{tabular}
+\caption{Interpretación de Cohen's $d$}
+\end{table}
+
+Se espera un efecto mediano:
+
+\[
+d \approx 0.5
+\]
+
+\subsection{Cohen's h para Proporciones}
+
+Para comparar proporciones como Phase 1 pass rate y Phase 2 pass rate se utilizará Cohen's $h$:
+
+\[
+h = 2\arcsin(\sqrt{p_1}) - 2\arcsin(\sqrt{p_2})
+\]
+
+Se reportará junto con las diferencias absolutas de proporciones para facilitar interpretación práctica.
+
+\section{Power Analysis}
+
+Se utilizarán los siguientes parámetros de análisis de poder:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.42\textwidth} p{0.42\textwidth}}
+\toprule
+\textbf{Parámetro} & \textbf{Valor} \\
+\midrule
+Nivel de significancia $\alpha$ & 0.05 \\
+Poder objetivo & 0.80 \\
+Efecto esperado & Mediano \\
+Diseño & Within-subjects / pareado \\
+Tamaño de muestra disponible & 166 operaciones \\
+\bottomrule
+\end{tabular}
+\caption{Configuración de power analysis}
+\end{table}
+
+Dado que TritonBench-T contiene 166 operaciones, el tamaño de muestra disponible es:
+
+\[
+n = 166
+\]
+
+Este tamaño se considera razonable para detectar efectos medianos bajo un diseño pareado. Si los efectos observados son pequeños, se reportará esta limitación explícitamente, ya que efectos pequeños podrían requerir un benchmark más grande o múltiples repeticiones adicionales.
+
+\section{Plan Estadístico}
+
+\subsection{Pruebas Estadísticas}
+
+\subsubsection*{Datos Binarios: Phase 1 y Phase 2}
+
+Para métricas binarias de pass/fail se utilizará \textbf{McNemar test}, ya que las observaciones están pareadas por operación.
+
+Esto aplica a:
+
+\begin{itemize}
+    \item Phase 1 pass/fail;
+    \item Phase 2 pass/fail.
+\end{itemize}
+
+\subsubsection*{Runtime y Speedup}
+
+Para runtime y speedup se utilizará \textbf{Wilcoxon signed-rank test}, ya que los datos están pareados por operación y pueden presentar distribuciones no normales.
+
+Los tiempos de ejecución y speedups en GPU pueden presentar distribuciones sesgadas y outliers asociados a warm-up, compilación JIT, variabilidad de hardware y comportamiento del entorno cloud, por lo que se prefieren pruebas no paramétricas.
+
+\subsubsection*{Comparación Global entre Modelos}
+
+Para comparar múltiples condiciones dentro del diseño pareado se utilizará \textbf{Friedman test}. Esta prueba permitirá evaluar diferencias globales entre configuraciones sin asumir normalidad.
+
+\subsection{Intervalos de Confianza}
+
+Se reportarán intervalos de confianza al 95\% para:
+
+\begin{itemize}
+    \item Phase 1 pass rate;
+    \item Phase 2 pass rate;
+    \item diferencia absoluta de pass rates;
+    \item runtime;
+    \item speedup;
+    \item tamaños del efecto.
+\end{itemize}
+
+\subsection{Regla de Decisión}
+
+Se rechazará la hipótesis nula cuando:
+
+\[
+p < 0.05
+\]
+
+Los p-valores se reportarán de forma exacta cuando sea posible. No se interpretará la significancia estadística como evidencia suficiente de importancia práctica; también se reportarán tamaños del efecto e intervalos de confianza.
+
+\subsection{Corrección por Comparaciones Múltiples}
+
+Debido a que se realizarán múltiples comparaciones entre modelos y condiciones, se aplicará corrección \textbf{Holm-Bonferroni} para controlar el Family-Wise Error Rate.
+
+\section{Reproducibilidad Experimental}
+
+\subsection{Seeds}
+
+Se utilizarán múltiples seeds:
+
+\[
+[42, 123, 456, 789, 2024]
+\]
+
+Los resultados finales se reportarán como:
+
+\[
+\text{media} \pm SD
+\]
+
+sobre las corridas independientes.
+
+\subsection{Determinismo}
+
+Se fijarán las semillas de las principales fuentes de aleatoriedad:
+
+\begin{itemize}
+    \item \texttt{random.seed()}
+    \item \texttt{numpy.random.seed()}
+    \item \texttt{torch.manual\_seed()}
+\end{itemize}
+
+Además, todos los experimentos utilizarán:
+
+\[
+temperature = 0.0
+\]
+
+para reducir variabilidad en la generación.
+
+\subsection{Documentación del Entorno}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{p{0.32\textwidth} p{0.58\textwidth}}
+\toprule
+\textbf{Categoría} & \textbf{Información a reportar} \\
+\midrule
+GPU local & RTX 4090 en laptop con WSL2 \\
+Cloud & Modal, especificando clase de GPU usada \\
+Sistema operativo & Ubuntu 22.04 en WSL2 \\
+Python & Versión exacta, Python 3.11+ \\
+Frameworks & vLLM, XGrammar, TritonBench4Modal \\
+Benchmark & TritonBench-T, 166 operaciones \\
+Versionado & Git commit hash \\
+Configuración & \texttt{experiment\_config.json} \\
+Logs & JSONL por operación y trayectoria \\
+\bottomrule
+\end{tabular}
+\caption{Documentación del entorno experimental}
+\end{table}
+
+\subsection{Prompts y Gramática}
+
+Todos los prompts utilizados serán versionados y almacenados junto con el código fuente. Esto incluye:
+
+\begin{itemize}
+    \item translator prompt;
+    \item fixer prompt;
+    \item preámbulo de higiene Triton;
+    \item EBNF whitelist usada por XGrammar.
+\end{itemize}
+
+La gramática y los prompts se consideran parte de la configuración experimental, no detalles secundarios. Cambiar el prompt sin registrarlo equivaldría a modificar la condición experimental.
+
+\subsection{Logs de Trayectoria}
+
+Cada operación generará logs JSONL con la siguiente información mínima:
+
+\begin{itemize}
+    \item nombre de la operación;
+    \item iteración;
+    \item rol del modelo: translator o fixer;
+    \item hash del prompt;
+    \item generación producida;
+    \item resultado del validador;
+    \item timestamp.
+\end{itemize}
+
+Estos logs permitirán analizar no solo el resultado final, sino también la trayectoria de refinamiento.
+
+\section{Amenazas a la Validez}
+
+\subsection{Validez Interna}
+
+Posibles amenazas:
+
+\begin{itemize}
+    \item efectos de orden entre ejecuciones;
+    \item warm caches o estado previo del compilador;
+    \item variabilidad del entorno Modal;
+    \item diferencias de clase de GPU si no se controla correctamente;
+    \item non-determinism en operaciones GPU;
+    \item cambios en versiones de librerías o dependencias;
+    \item prompts modificados entre condiciones.
+\end{itemize}
+
+Medidas de mitigación:
+
+\begin{itemize}
+    \item registrar orden de ejecución;
+    \item usar misma clase de GPU por condición;
+    \item fijar seeds;
+    \item fijar temperature = 0.0;
+    \item versionar código, prompts y gramática;
+    \item reportar versiones exactas de dependencias.
+\end{itemize}
+
+\subsection{Validez Externa}
+
+Posibles amenazas:
+
+\begin{itemize}
+    \item el estudio se limita a TritonBench-T;
+    \item los resultados pueden no generalizar a kernels industriales fuera del benchmark;
+    \item solo se evalúan modelos coder-specialized de aproximadamente 7B parámetros;
+    \item los resultados pueden variar en GPUs diferentes a las usadas en Modal;
+    \item la EBNF whitelist puede no cubrir todos los patrones válidos de Triton en escenarios reales.
+\end{itemize}
+
+\subsection{Validez de Constructo}
+
+Posibles amenazas:
+
+\begin{itemize}
+    \item Phase 1 pass rate mide compilación, pero no necesariamente utilidad real;
+    \item Phase 2 pass rate mide correctness funcional, pero no calidad, legibilidad o mantenibilidad del kernel;
+    \item Phase 3 speedup mide rendimiento, pero puede estar afectado por ruido de hardware;
+    \item grammar-valid no implica que el kernel sea semánticamente correcto;
+    \item repair success rate puede ocultar múltiples intentos fallidos antes de llegar a una solución correcta.
+\end{itemize}
+
+Por estas razones, las conclusiones se formularán en términos de mejora observada bajo las condiciones experimentales definidas, evitando generalizaciones más amplias que no estén soportadas por los datos.
+
+\end{document}
