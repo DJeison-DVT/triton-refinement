@@ -63,3 +63,17 @@ def load_ops(limit: int | None = None) -> list[Op]:
         ))
 
     return ops
+
+
+def build_stem_to_opname() -> dict[str, str]:
+    """Build a mapping from TritonBench file stems to op names.
+
+    TritonBench4Modal returns file stems (e.g., "add", "tanh") in evaluation
+    results. Our pipeline uses op names from metadata (e.g., "torch.add",
+    "torch.tanh"). This mapping bridges the two.
+    """
+    metadata = json.loads(_METADATA_PATH.read_text(encoding="utf-8"))
+    return {
+        meta["file"].replace(".py", ""): meta["name"]
+        for meta in metadata
+    }
