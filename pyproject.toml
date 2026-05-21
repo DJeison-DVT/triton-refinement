@@ -1,0 +1,19 @@
+[project]
+name = "triton-refinement"
+version = "0.1.0"
+description = "Reflexion-style iterative refinement for PyTorch-to-Triton kernel translation with XGrammar constrained decoding"
+requires-python = ">=3.11"
+dependencies = [
+    "modal>=0.66",
+    "openai>=1.50",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+analysis = [
+    "pandas",
+    "matplotlib",
+    "seaborn",
+]
