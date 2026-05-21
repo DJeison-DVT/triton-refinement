@@ -55,7 +55,7 @@ For development (includes pytest):
 pip install -e ".[dev]"
 ```
 
-For analysis (includes pandas, matplotlib, seaborn):
+For analysis (includes numpy, scipy, pandas, matplotlib, seaborn):
 ```bash
 pip install -e ".[analysis]"
 ```
