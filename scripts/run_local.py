@@ -1,17 +1,18 @@
 """Local dev CLI: translate a single PyTorch op to Triton via LLM.
 
-No refinement loop — just test generation and translation for smoke testing
-the plumbing (dataset, LLM client, grammar).
+Supports optional refinement loop (--refine) for smoke testing the full
+pipeline (dataset, LLM client, grammar, translate, compile, test, review).
 
 Usage:
     python scripts/run_local.py                          # first op, Ollama
     python scripts/run_local.py --op abs                 # specific op
     python scripts/run_local.py --limit 3                # first 3 ops
     python scripts/run_local.py --base-url http://localhost:8000/v1 --model Qwen/Qwen2.5-Coder-7B
+    python scripts/run_local.py --refine                 # enable refinement loop
+    python scripts/run_local.py --refine --max-iters 3   # refinement with 3 iterations
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -21,25 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from adapters.dataset import load_ops
 from core.grammar import load_grammar
 from core.llm_client import LLMClient
-
-
-TRANSLATE_SYSTEM = (
-    "You are an expert in Triton GPU programming. Translate the given PyTorch "
-    "operator into an equivalent Triton kernel and wrapper function.\n\n"
-    "Output a single Python module containing:\n"
-    "1. Necessary imports (torch, triton, triton.language as tl)\n"
-    "2. The Triton kernel(s) decorated with @triton.jit\n"
-    "3. A wrapper function matching the original PyTorch signature\n\n"
-    "Wrap the entire module in one ```python ... ``` code block."
-)
-
-
-def extract_code(text: str) -> str:
-    """Strip markdown code fences from LLM output."""
-    m = re.search(r"```(?:python|py)?\s*\n(.*?)\n```", text, re.DOTALL)
-    if m:
-        return m.group(1).strip() + "\n"
-    return text.strip() + "\n"
+from prompts import extract_code
+from prompts import translator, test_generator
 
 
 def main():
@@ -52,6 +36,8 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--grammar", action="store_true", help="Enable XGrammar constraint (vLLM only)")
     parser.add_argument("--out", help="Write predictions.jsonl to this path")
+    parser.add_argument("--refine", action="store_true", help="Enable refinement loop (compile > test > review > fix)")
+    parser.add_argument("--max-iters", type=int, default=5, help="Maximum refinement iterations (default: 5)")
     args = parser.parse_args()
 
     # Auto-detect model name based on backend
@@ -85,14 +71,50 @@ def main():
         print(f"Translating: {op.op_name}")
         print(f"{'='*60}")
 
-        messages = [
-            {"role": "system", "content": TRANSLATE_SYSTEM},
-            {"role": "user", "content": f"Translate this PyTorch operator to Triton:\n\n```python\n{op.pytorch_code}\n```"},
-        ]
+        if args.refine:
+            from core.loop import generate_with_refinement, save_trajectory
 
-        print("Calling LLM...", flush=True)
-        raw = client.generate(messages, grammar=grammar)
-        code = extract_code(raw)
+            # Generate tests first
+            print("Generating tests...", flush=True)
+            test_msgs = test_generator.format_messages(op.pytorch_code)
+            raw_tests = client.generate(test_msgs)
+            test_code = extract_code(raw_tests)
+
+            # Run refinement loop
+            print(f"Running refinement loop (max {args.max_iters} iters)...", flush=True)
+            result = generate_with_refinement(
+                op_name=op.op_name,
+                pytorch_code=op.pytorch_code,
+                test_code=test_code,
+                client=client,
+                grammar=grammar,
+                max_iters=args.max_iters,
+            )
+
+            # Save trajectory
+            traj_dir = Path(__file__).resolve().parent.parent / "results" / "local" / "trajectories"
+            traj_path = save_trajectory(result, traj_dir)
+
+            status = "PASS" if result.passed else "FAIL"
+            print(f"\nStatus: {status} (iterations: {result.total_iterations})")
+            print(f"Trajectory saved to: {traj_path}")
+
+            code = result.final_code
+        else:
+            # Non-refine path: use translator prompt module
+            if grammar:
+                messages = translator.format_kernel_messages(op.pytorch_code)
+            else:
+                messages = translator.format_messages(op.pytorch_code)
+
+            print("Calling LLM...", flush=True)
+            raw = client.generate(messages, grammar=grammar)
+
+            if grammar:
+                # Grammar-constrained output is raw code — no extraction needed
+                code = raw if raw.endswith("\n") else raw + "\n"
+            else:
+                code = extract_code(raw)
 
         print(f"\n--- Generated Triton code ({len(code.splitlines())} lines) ---")
         print(code[:2000])

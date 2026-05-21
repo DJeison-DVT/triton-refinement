@@ -1,0 +1,91 @@
+{
+  "experiment_name": "triton-refinement-v1",
+  "description": "Reflexion-style iterative refinement with XGrammar constrained decoding for PyTorch-to-Triton translation",
+
+  "models": [
+    {
+      "name": "Qwen2.5-Coder-7B",
+      "hf_id": "Qwen/Qwen2.5-Coder-7B",
+      "params": "7B",
+      "role": "headline"
+    },
+    {
+      "name": "DeepSeek-Coder-6.7B",
+      "hf_id": "deepseek-ai/deepseek-coder-6.7b-base",
+      "params": "6.7B",
+      "role": "comparison"
+    },
+    {
+      "name": "CodeGemma-7B",
+      "hf_id": "google/codegemma-7b",
+      "params": "7B",
+      "role": "comparison"
+    }
+  ],
+
+  "conditions": {
+    "single-shot": {
+      "max_iterations": 1,
+      "grammar_constrained": true,
+      "pattern_memory": false
+    },
+    "refinement": {
+      "max_iterations": 5,
+      "grammar_constrained": true,
+      "pattern_memory": "inmemory"
+    }
+  },
+
+  "benchmark": {
+    "name": "TritonBench-T",
+    "n_ops": 166,
+    "data_source": "thunlp/TritonBench",
+    "evaluator": "TritonBench4Modal",
+    "evaluator_commit": "6103f69"
+  },
+
+  "reproducibility": {
+    "seeds": [42, 123, 456, 789, 2024],
+    "temperature": 0.0,
+    "deterministic_seeds": {
+      "random": true,
+      "numpy": true,
+      "torch": true
+    }
+  },
+
+  "infrastructure": {
+    "local": {
+      "gpu": "RTX 4090",
+      "os": "Ubuntu 22.04 (WSL2)",
+      "python": "3.11+"
+    },
+    "cloud": {
+      "provider": "Modal",
+      "vllm_gpu": "L4 or A10G",
+      "eval_gpu": "T4"
+    }
+  },
+
+  "grammar": {
+    "source": "triton_lexeme/triton.ebnf",
+    "backend": "xgrammar",
+    "api_param": "guided_grammar"
+  },
+
+  "statistical_plan": {
+    "alpha": 0.05,
+    "power": 0.80,
+    "primary_metric": "phase2_pass_rate",
+    "tests": {
+      "binary_paired": "McNemar",
+      "continuous_paired": "Wilcoxon signed-rank",
+      "multi_group": "Friedman",
+      "correction": "Holm-Bonferroni"
+    },
+    "effect_sizes": {
+      "continuous": "Cohen's d",
+      "proportions": "Cohen's h"
+    }
+  }
+}

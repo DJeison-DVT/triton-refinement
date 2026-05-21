@@ -48,9 +48,11 @@ model_volume = modal.Volume.from_name(
 @app.function(
     gpu=GPU_TYPE,
     timeout=2 * 60 * MINUTES,
+    scaledown_window=5 * MINUTES,
     volumes={"/root/.cache/huggingface": model_volume},
 )
-@modal.web_server(port=VLLM_PORT, startup_timeout=10 * MINUTES)
+@modal.concurrent(max_inputs=10)
+@modal.web_server(port=VLLM_PORT, startup_timeout=5 * MINUTES)
 def serve():
     """Launch vLLM's OpenAI-compatible server as a subprocess."""
     cmd = " ".join([
@@ -58,8 +60,10 @@ def serve():
         "--model", MODEL_ID,
         "--host", "0.0.0.0",
         "--port", str(VLLM_PORT),
+        "--guided-decoding-backend", "xgrammar",
         "--max-model-len", "8192",
         "--gpu-memory-utilization", "0.90",
         "--enforce-eager",
+        "--dtype", "auto",
     ])
     subprocess.Popen(cmd, shell=True)
