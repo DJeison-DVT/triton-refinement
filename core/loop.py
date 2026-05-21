@@ -217,6 +217,19 @@ def _fix(
 # ---------------------------------------------------------------------------
 
 
+def _log(msg: str, verbose: bool) -> None:
+    """Print a progress message if verbose is enabled."""
+    if verbose:
+        print(msg, flush=True)
+
+
+def _write_work_file(work_dir: Path | None, name: str, code: str) -> None:
+    """Write code to a work file so it can be inspected live."""
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / name).write_text(code, encoding="utf-8")
+
+
 def generate_with_refinement(
     op_name: str,
     pytorch_code: str,
@@ -226,6 +239,8 @@ def generate_with_refinement(
     grammar: str | None = None,
     max_iters: int = 5,
     pattern_memory: PatternMemory | None = None,
+    verbose: bool = False,
+    work_dir: Path | None = None,
 ) -> RefinementResult:
     """Orchestrate the full refinement pipeline for one operator.
 
@@ -240,6 +255,9 @@ def generate_with_refinement(
         grammar: Optional EBNF grammar string for constrained kernel generation.
         max_iters: Maximum number of refinement iterations.
         pattern_memory: Optional PatternMemory for storing/retrieving patterns.
+        verbose: If True, print step-by-step progress to stdout.
+        work_dir: If set, write triton code and tests to files here so they
+                  can be inspected live during the run.
 
     Returns:
         RefinementResult with final_code, trajectory, pass/fail status.
@@ -247,11 +265,17 @@ def generate_with_refinement(
     trajectory: list[IterationLog] = []
 
     # Step 1: Initial translation
+    _log(f"  [translate] Generating initial Triton code...", verbose)
     triton_code, translate_logs = _translate(client, pytorch_code, grammar)
     trajectory.extend(translate_logs)
+    _log(f"  [translate] Done ({len(triton_code.splitlines())} lines)", verbose)
+    _write_work_file(work_dir, f"{op_name}.py", triton_code)
+    _write_work_file(work_dir, f"{op_name}_test.py", test_code)
 
     # Step 2: Refinement loop
     for i in range(1, max_iters + 1):
+        _log(f"  [iter {i}/{max_iters}] Compile check...", verbose)
+
         # --- Compile check ---
         compile_ok, compile_err = _run_code(triton_code)
         trajectory.append(
@@ -266,8 +290,14 @@ def generate_with_refinement(
             )
         )
         if not compile_ok:
+            err_first_line = compile_err.strip().split("\n")[-1][:120]
+            _log(f"  [iter {i}/{max_iters}] Compile FAIL: {err_first_line}", verbose)
+            _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
             triton_code = _fix(client, pytorch_code, triton_code, compile_err, trajectory, i)
+            _write_work_file(work_dir, f"{op_name}.py", triton_code)
             continue
+
+        _log(f"  [iter {i}/{max_iters}] Compile PASS. Running tests...", verbose)
 
         # --- Test run ---
         combined_code = triton_code + "\n\n" + test_code
@@ -284,8 +314,14 @@ def generate_with_refinement(
             )
         )
         if not test_ok:
+            err_first_line = test_err.strip().split("\n")[-1][:120]
+            _log(f"  [iter {i}/{max_iters}] Test FAIL: {err_first_line}", verbose)
+            _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
             triton_code = _fix(client, pytorch_code, triton_code, test_err, trajectory, i)
+            _write_work_file(work_dir, f"{op_name}.py", triton_code)
             continue
+
+        _log(f"  [iter {i}/{max_iters}] Tests PASS. Reviewing...", verbose)
 
         # --- Review ---
         patterns = pattern_memory.retrieve(pytorch_code) if pattern_memory else None
@@ -305,6 +341,7 @@ def generate_with_refinement(
         )
 
         if approved:
+            _log(f"  [iter {i}/{max_iters}] Review APPROVED", verbose)
             if pattern_memory is not None:
                 pattern_memory.store(op_name, triton_code, "pass")
             return RefinementResult(
@@ -317,9 +354,14 @@ def generate_with_refinement(
             )
 
         # Reviewer rejected — fix with the feedback
+        feedback_preview = review_response.strip().split("\n")[0][:120]
+        _log(f"  [iter {i}/{max_iters}] Review REJECTED: {feedback_preview}", verbose)
+        _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
         triton_code = _fix(client, pytorch_code, triton_code, review_response, trajectory, i)
+        _write_work_file(work_dir, f"{op_name}.py", triton_code)
 
     # Loop exhausted without approval
+    _log(f"  Max iterations ({max_iters}) reached", verbose)
     if pattern_memory is not None:
         pattern_memory.store(op_name, triton_code, "fail")
 

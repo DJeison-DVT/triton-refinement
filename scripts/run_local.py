@@ -81,6 +81,7 @@ def main():
             test_code = extract_code(raw_tests)
 
             # Run refinement loop
+            work_dir = Path(__file__).resolve().parent.parent / "results" / "local" / "work"
             print(f"Running refinement loop (max {args.max_iters} iters)...", flush=True)
             result = generate_with_refinement(
                 op_name=op.op_name,
@@ -89,6 +90,8 @@ def main():
                 client=client,
                 grammar=grammar,
                 max_iters=args.max_iters,
+                verbose=True,
+                work_dir=work_dir,
             )
 
             # Save trajectory
