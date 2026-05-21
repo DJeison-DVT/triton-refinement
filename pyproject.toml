@@ -13,7 +13,15 @@ dev = [
     "pytest",
 ]
 analysis = [
+    "numpy",
+    "scipy",
     "pandas",
     "matplotlib",
     "seaborn",
 ]
+
+[tool.setuptools.packages.find]
+include = ["core*", "adapters*", "prompts*", "scripts*", "analysis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

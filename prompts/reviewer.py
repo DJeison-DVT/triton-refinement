@@ -18,7 +18,7 @@ Otherwise, describe each issue concisely so the fixer can address them.\
 """
 
 _PATTERNS_SECTION = """\
-Pattern memory — known best practices from previous runs:
+Known patterns from previous translations:
 {patterns_list}
 
 """
@@ -41,21 +41,25 @@ Please review the Triton implementation above.
 def format_messages(
     triton_code: str,
     pytorch_code: str,
-    patterns: list[str] | None = None,
+    patterns: list[dict] | None = None,
 ) -> list[dict[str, str]]:
     """Return OpenAI-style messages for Triton code review.
 
     Args:
         triton_code: The Triton kernel + wrapper code to review.
         pytorch_code: The reference PyTorch operator.
-        patterns: Optional list of pattern-memory strings to include in the
-                  system prompt. When None, the patterns section is omitted.
+        patterns: Optional list of pattern-memory dicts from PatternMemory.retrieve(),
+                  each with keys {op_name, pattern, outcome}. When None, the
+                  patterns section is omitted.
 
     Returns:
         A list of two dicts with 'role' and 'content' keys.
     """
     if patterns:
-        patterns_list = "\n".join(f"- {p}" for p in patterns)
+        lines = []
+        for p in patterns:
+            lines.append(f"- [{p['outcome']}] {p['op_name']}: {p['pattern']}")
+        patterns_list = "\n".join(lines)
         patterns_section = _PATTERNS_SECTION.format(patterns_list=patterns_list)
     else:
         patterns_section = ""
