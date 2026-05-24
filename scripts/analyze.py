@@ -42,7 +42,7 @@ from analysis.stats import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Statistical analysis for Triton Refinement")
-    parser.add_argument("--results-dir", type=Path, default=Path("results/trajectories"),
+    parser.add_argument("--results-dir", type=Path, default=Path("results"),
                         help="Directory containing experiment run folders")
     parser.add_argument("--config", type=Path, default=Path("experiment_config.json"),
                         help="Path to experiment_config.json")

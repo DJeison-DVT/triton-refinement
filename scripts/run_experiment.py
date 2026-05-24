@@ -101,7 +101,12 @@ def run_single(
     limit: int | None,
     max_tokens: int,
 ) -> None:
-    """Execute a single experiment run."""
+    """Execute a single experiment run with per-op resume.
+
+    Skips ops that already have a trajectory file. Merges new results
+    into existing op_results.json and predictions.jsonl. Writes
+    summary.json at the end.
+    """
     settings = resolve_condition_settings(config_path, condition)
     max_iters = settings["max_iterations"]
     use_grammar = settings["grammar_constrained"]
@@ -119,12 +124,23 @@ def run_single(
     run_dir.mkdir(parents=True, exist_ok=True)
     traj_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load existing op_results if resuming
+    op_results_path = run_dir / "op_results.json"
+    if op_results_path.exists():
+        op_results = json.loads(op_results_path.read_text(encoding="utf-8"))
+    else:
+        op_results = {}
+
     total = len(ops)
-    predictions = []
-    op_results = {}
-    n_passed = 0
+    n_skipped = 0
 
     for idx, op in enumerate(ops):
+        traj_file = traj_dir / f"{op.op_name}.jsonl"
+        if traj_file.exists():
+            print(f"[{idx + 1}/{total}] {op.op_name} — cached", flush=True)
+            n_skipped += 1
+            continue
+
         print(f"[{idx + 1}/{total}] {op.op_name}", flush=True)
 
         test_msgs = test_generator.format_messages(op.pytorch_code)
@@ -139,20 +155,34 @@ def run_single(
         status = "PASS" if result.passed else "FAIL"
         print(f"  {status} ({result.total_iterations} iter(s))", flush=True)
 
-        if result.passed:
-            n_passed += 1
-
         save_trajectory(result, traj_dir)
-        predictions.append({"instruction": op.instruction, "predict": result.final_code})
         op_results[op.op_name] = build_op_result(result)
+
+        # Save op_results after each op so progress survives crashes
+        op_results_path.write_text(
+            json.dumps(op_results, indent=2), encoding="utf-8",
+        )
+
+    # Rebuild predictions.jsonl from all trajectories
+    predictions = []
+    for op in ops:
+        traj_file = traj_dir / f"{op.op_name}.jsonl"
+        if not traj_file.exists():
+            continue
+        # Read final code from last trajectory entry
+        lines = traj_file.read_text(encoding="utf-8").strip().splitlines()
+        final_code = ""
+        for line in reversed(lines):
+            entry = json.loads(line)
+            if entry.get("generation"):
+                final_code = entry["generation"]
+                break
+        predictions.append({"instruction": op.instruction, "predict": final_code})
 
     pred_path = run_dir / "predictions.jsonl"
     write_predictions(predictions, pred_path)
 
-    (run_dir / "op_results.json").write_text(
-        json.dumps(op_results, indent=2), encoding="utf-8",
-    )
-
+    n_passed = sum(1 for r in op_results.values() if r.get("final_status") == "pass")
     pass_rate = n_passed / total if total else 0.0
     summary = {
         "run_id": run_id,
@@ -171,6 +201,8 @@ def run_single(
     print(f"\n{'='*60}")
     print(f"Run: {run_id}")
     print(f"Ops: {total} | Passed: {n_passed} | Pass rate: {pass_rate:.1%}")
+    if n_skipped:
+        print(f"Skipped: {n_skipped} (cached)")
     print(f"Results: {run_dir}")
 
 
@@ -187,17 +219,36 @@ def run_evaluation(run_dir: Path) -> None:
         return
 
     run_id = run_dir.name
+    eval_cache = run_dir / "eval_result.json"
+
+    # Skip if already evaluated
+    if eval_cache.exists():
+        print(f"  {run_id} — evaluation already cached, skipping Modal call")
+        return
+
     print(f"  Evaluating {run_id} via TritonBench4Modal...", flush=True)
 
     eval_result = evaluate(pred_path, output_subdir=run_id)
     stem_map = build_stem_to_opname()
     update_op_results_with_eval(op_results_path, eval_result, stem_map)
 
+    # Cache the raw evaluation result so we never re-run Modal for this
+    eval_cache.write_text(json.dumps({
+        "total_predictions": eval_result.total_predictions,
+        "phase1_passed": eval_result.phase1_passed,
+        "phase1_rate": eval_result.phase1_rate,
+        "phase1_ops": eval_result.phase1_ops,
+        "phase2_passed": eval_result.phase2_passed,
+        "phase2_rate": eval_result.phase2_rate,
+        "phase2_ops": eval_result.phase2_ops,
+        "phase3_speedup": eval_result.phase3_speedup,
+    }, indent=2), encoding="utf-8")
+
     print(f"  Phase 1: {eval_result.phase1_passed}/{eval_result.total_predictions} ({eval_result.phase1_rate:.1f}%)")
     print(f"  Phase 2: {eval_result.phase2_passed}/{eval_result.total_predictions} ({eval_result.phase2_rate:.1f}%)")
     if eval_result.phase3_speedup is not None:
         print(f"  Phase 3: {eval_result.phase3_speedup:.2f}x vs PyTorch")
-    print(f"  Updated {op_results_path}")
+    print(f"  Saved {eval_cache}")
 
 
 def main():
@@ -228,6 +279,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Build the list of runs — batch or single
     if args.batch:
         matrix = build_sweep_matrix(
             args.config,
@@ -235,48 +287,33 @@ def main():
             conditions_filter=args.conditions,
             seeds_filter=args.seeds,
         )
-        total_runs = len(matrix)
-        print(f"Batch mode: {total_runs} runs from {args.config}")
-
-        for i, run_spec in enumerate(matrix):
-            run_id = make_run_id(run_spec["model"], run_spec["condition"], run_spec["seed"])
-            run_dir = args.output_dir / run_id
-
-            if is_run_complete(run_dir):
-                print(f"[{i + 1}/{total_runs}] {run_id} — skipped (already complete)")
-                continue
-
-            print(f"\n[{i + 1}/{total_runs}] {run_id}")
-            run_single(
-                model=run_spec["model"],
-                condition=run_spec["condition"],
-                seed=run_spec["seed"],
-                base_url=args.base_url,
-                config_path=args.config,
-                output_dir=args.output_dir,
-                limit=args.limit,
-                max_tokens=args.max_tokens,
-            )
-            if args.evaluate:
-                run_evaluation(run_dir)
-
-        print(f"\nBatch complete: {total_runs} runs")
+        print(f"Batch mode: {len(matrix)} runs from {args.config}")
     else:
         if not args.model or not args.condition:
             parser.error("--model and --condition are required for single-run mode (or use --batch)")
+        matrix = [{"model": args.model, "condition": args.condition, "seed": args.seed}]
+
+    # Run each — per-op resume is handled inside run_single
+    for i, run_spec in enumerate(matrix):
+        run_id = make_run_id(run_spec["model"], run_spec["condition"], run_spec["seed"])
+        print(f"\n[{i + 1}/{len(matrix)}] {run_id}")
+
         run_single(
-            model=args.model,
-            condition=args.condition,
-            seed=args.seed,
+            model=run_spec["model"],
+            condition=run_spec["condition"],
+            seed=run_spec["seed"],
             base_url=args.base_url,
             config_path=args.config,
             output_dir=args.output_dir,
             limit=args.limit,
             max_tokens=args.max_tokens,
         )
+
         if args.evaluate:
-            run_id = make_run_id(args.model, args.condition, args.seed)
             run_evaluation(args.output_dir / run_id)
+
+    if len(matrix) > 1:
+        print(f"\nBatch complete: {len(matrix)} runs")
 
 
 if __name__ == "__main__":
