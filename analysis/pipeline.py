@@ -42,19 +42,30 @@ def run_pairwise_analysis(
     model: str,
     config: AnalysisConfig,
     seed: int | None = None,
+    condition_a: str | None = None,
+    condition_b: str | None = None,
 ) -> dict[str, Any]:
-    """Run the full pairwise analysis for one model (single-shot vs refinement).
+    """Run the full pairwise analysis for one model comparing two conditions.
 
+    If condition_a/condition_b are None, uses the first comparison from config.
     If seed is None, aggregates across all seeds for that model.
     Uses config.alpha for confidence intervals.
     """
+    if condition_a is None or condition_b is None:
+        if config.comparisons:
+            condition_a = config.comparisons[0].condition_a
+            condition_b = config.comparisons[0].condition_b
+        else:
+            condition_a = config.conditions[0]
+            condition_b = config.conditions[1] if len(config.conditions) > 1 else config.conditions[0]
+
     if seed is not None:
         sub = df[(df["model"] == model) & (df["seed"] == seed)]
     else:
         sub = df[df["model"] == model]
 
-    ss = sub[sub["condition"] == "single-shot"].set_index("op_name")
-    ref = sub[sub["condition"] == "refinement"].set_index("op_name")
+    ss = sub[sub["condition"] == condition_a].set_index("op_name")
+    ref = sub[sub["condition"] == condition_b].set_index("op_name")
 
     # Align by op_name
     common_ops = sorted(set(ss.index) & set(ref.index))
@@ -156,15 +167,20 @@ def run_multi_model_comparison(
     config: AnalysisConfig,
     metric: str = "phase2",
 ) -> dict[str, Any]:
-    """Friedman test comparing all models under refinement condition.
+    """Friedman test comparing all models under the second condition.
 
-    Uses config.models for iteration order.
+    Uses config.models for iteration order, and the last condition
+    from config (typically "refinement" or its variant).
     """
-    ref = df[df["condition"] == "refinement"]
+    # Use the treatment condition: last condition present in the data
+    data_conditions = sorted(df["condition"].unique().tolist())
+    treatment = data_conditions[-1] if data_conditions else config.conditions[-1]
+    ref = df[df["condition"] == treatment]
 
+    # Use models actually present in data, not config (names may differ)
     groups = []
     model_names = []
-    for model in config.models:
+    for model in sorted(ref["model"].unique()):
         sub = ref[ref["model"] == model]
         if sub.empty:
             continue

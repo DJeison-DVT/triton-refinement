@@ -13,7 +13,12 @@ Your job is to fix the Triton implementation so it:
 
 Output the complete fixed Triton module (kernel + wrapper) wrapped in a \
 ```python ... ``` markdown fence. Do not include partial snippets — output the \
-full corrected module.\
+full corrected module.
+
+IMPORTANT: Output ONLY the Triton kernel and wrapper function. Do NOT include \
+test code, example usage, or calls to the function. Do NOT include `if __name__` \
+blocks. The module should contain only imports, the @triton.jit kernel, and the \
+wrapper function.\
 """
 
 _USER_TEMPLATE = """\

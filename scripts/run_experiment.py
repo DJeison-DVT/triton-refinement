@@ -100,6 +100,7 @@ def run_single(
     output_dir: Path,
     limit: int | None,
     max_tokens: int,
+    verbose: bool = False,
 ) -> None:
     """Execute a single experiment run with per-op resume.
 
@@ -149,7 +150,7 @@ def run_single(
 
         result = generate_with_refinement(
             op.op_name, op.pytorch_code, test_code, client,
-            grammar=grammar, max_iters=max_iters, pattern_memory=mem,
+            grammar=grammar, max_iters=max_iters, pattern_memory=mem, verbose=verbose,
         )
 
         status = "PASS" if result.passed else "FAIL"
@@ -262,6 +263,7 @@ def main():
     parser.add_argument("--base-url", default="http://localhost:8000/v1", help="vLLM endpoint URL")
     parser.add_argument("--limit", type=int, default=None, help="Number of ops to process (default: all 166)")
     parser.add_argument("--max-tokens", type=int, default=4096, help="Max tokens per LLM call")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Show refinement loop details (compile/test/review/fix)")
 
     # -- Batch mode flags --
     parser.add_argument("--batch", action="store_true", help="Run all models x conditions x seeds from config")
@@ -307,6 +309,7 @@ def main():
             output_dir=args.output_dir,
             limit=args.limit,
             max_tokens=args.max_tokens,
+            verbose=args.verbose,
         )
 
         if args.evaluate:

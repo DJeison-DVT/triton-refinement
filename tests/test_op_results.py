@@ -1,10 +1,14 @@
-"""Tests for build_op_result() — per-op outcome extraction."""
+"""Tests for build_op_result() and update_op_results_with_eval()."""
+
+import json
+from pathlib import Path
 
 from core.loop import (
     IterationLog,
     RefinementResult,
     build_op_result,
 )
+from adapters.tritonbench import EvalResult, update_op_results_with_eval
 
 
 PYTORCH_CODE = "def add(x, y):\n    return x + y\n"
@@ -122,3 +126,69 @@ def test_review_rejected_never_approved():
     assert op["review_approved"] is False
     assert op["phases_reached"] == ["compile", "test", "review"]
     assert op["phases_skipped"] == []
+
+
+# ---------------------------------------------------------------------------
+# update_op_results_with_eval tests
+# ---------------------------------------------------------------------------
+
+
+def test_update_op_results_with_eval(tmp_path):
+    """eval_phase1/eval_phase2/eval_speedup are written per op."""
+    op_results = {
+        "torch.add": {"phase1_compile": True, "phase2_test": True, "final_status": "pass"},
+        "torch.bmm": {"phase1_compile": True, "phase2_test": False, "final_status": "fail"},
+        "torch.svd": {"phase1_compile": False, "phase2_test": None, "final_status": "fail"},
+    }
+    op_results_path = tmp_path / "op_results.json"
+    op_results_path.write_text(json.dumps(op_results), encoding="utf-8")
+
+    eval_result = EvalResult(
+        total_predictions=3,
+        phase1_passed=2, phase1_rate=66.7, phase1_ops=["add", "bmm"],
+        phase2_passed=1, phase2_rate=33.3, phase2_ops=["add"],
+        phase3_speedup=1.25,
+    )
+    stem_map = {"add": "torch.add", "bmm": "torch.bmm", "svd": "torch.svd"}
+
+    update_op_results_with_eval(op_results_path, eval_result, stem_map)
+
+    updated = json.loads(op_results_path.read_text(encoding="utf-8"))
+
+    assert updated["torch.add"]["eval_phase1"] is True
+    assert updated["torch.add"]["eval_phase2"] is True
+    assert updated["torch.add"]["eval_speedup"] == 1.25
+
+    assert updated["torch.bmm"]["eval_phase1"] is True
+    assert updated["torch.bmm"]["eval_phase2"] is False
+
+    assert updated["torch.svd"]["eval_phase1"] is False
+    assert updated["torch.svd"]["eval_phase2"] is False
+
+
+def test_update_op_results_preserves_existing_fields(tmp_path):
+    """Existing op_results fields are not overwritten."""
+    op_results = {
+        "torch.add": {
+            "phase1_compile": True,
+            "phase2_test": True,
+            "iterations_used": 2,
+            "repaired": True,
+        },
+    }
+    op_results_path = tmp_path / "op_results.json"
+    op_results_path.write_text(json.dumps(op_results), encoding="utf-8")
+
+    eval_result = EvalResult(
+        total_predictions=1,
+        phase1_passed=1, phase1_rate=100.0, phase1_ops=["add"],
+        phase2_passed=1, phase2_rate=100.0, phase2_ops=["add"],
+        phase3_speedup=0.9,
+    )
+
+    update_op_results_with_eval(op_results_path, eval_result, {"add": "torch.add"})
+
+    updated = json.loads(op_results_path.read_text(encoding="utf-8"))
+    assert updated["torch.add"]["iterations_used"] == 2
+    assert updated["torch.add"]["repaired"] is True
+    assert updated["torch.add"]["eval_phase1"] is True

@@ -103,12 +103,21 @@ def main() -> None:
             print(f"  Wilcoxon ({label} d={w['effect_size']}): "
                   f"min_n={w['min_n_required']}, sufficient={w['sufficient']}")
 
+    # --- Detect comparisons from data ---
+    data_conditions = sorted(df["condition"].unique().tolist())
+    if len(data_conditions) >= 2:
+        condition_a, condition_b = data_conditions[0], data_conditions[-1]
+    else:
+        condition_a = condition_b = data_conditions[0] if data_conditions else ""
+
     # --- Per-model pairwise analysis ---
     all_results: dict[str, dict] = {}
-    if "pairwise" in config.steps:
-        print("\n=== Pairwise Analysis (single-shot vs refinement) ===")
+    if "pairwise" in config.steps and len(data_conditions) >= 2:
+        print(f"\n=== Pairwise Analysis ({condition_a} vs {condition_b}) ===")
         for model in sorted(df["model"].unique()):
-            result = run_pairwise_analysis(df, model, config)
+            result = run_pairwise_analysis(df, model, config,
+                                           condition_a=condition_a,
+                                           condition_b=condition_b)
             all_results[model] = result
 
             if "error" in result:

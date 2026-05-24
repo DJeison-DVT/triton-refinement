@@ -293,7 +293,11 @@ def generate_with_refinement(
             err_first_line = compile_err.strip().split("\n")[-1][:120]
             _log(f"  [iter {i}/{max_iters}] Compile FAIL: {err_first_line}", verbose)
             _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
-            triton_code = _fix(client, pytorch_code, triton_code, compile_err, trajectory, i)
+            new_code = _fix(client, pytorch_code, triton_code, compile_err, trajectory, i)
+            if new_code == triton_code:
+                _log(f"  [iter {i}/{max_iters}] Fixer produced identical code — stopping early", verbose)
+                break
+            triton_code = new_code
             _write_work_file(work_dir, f"{op_name}.py", triton_code)
             continue
 
@@ -317,7 +321,11 @@ def generate_with_refinement(
             err_first_line = test_err.strip().split("\n")[-1][:120]
             _log(f"  [iter {i}/{max_iters}] Test FAIL: {err_first_line}", verbose)
             _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
-            triton_code = _fix(client, pytorch_code, triton_code, test_err, trajectory, i)
+            new_code = _fix(client, pytorch_code, triton_code, test_err, trajectory, i)
+            if new_code == triton_code:
+                _log(f"  [iter {i}/{max_iters}] Fixer produced identical code — stopping early", verbose)
+                break
+            triton_code = new_code
             _write_work_file(work_dir, f"{op_name}.py", triton_code)
             continue
 
@@ -357,7 +365,11 @@ def generate_with_refinement(
         feedback_preview = review_response.strip().split("\n")[0][:120]
         _log(f"  [iter {i}/{max_iters}] Review REJECTED: {feedback_preview}", verbose)
         _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
-        triton_code = _fix(client, pytorch_code, triton_code, review_response, trajectory, i)
+        new_code = _fix(client, pytorch_code, triton_code, review_response, trajectory, i)
+        if new_code == triton_code:
+            _log(f"  [iter {i}/{max_iters}] Fixer produced identical code — stopping early", verbose)
+            break
+        triton_code = new_code
         _write_work_file(work_dir, f"{op_name}.py", triton_code)
 
     # Loop exhausted without approval

@@ -36,6 +36,8 @@ def _mock_client(responses: list[str]) -> MagicMock:
 _KERNEL = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass\n"
 _WRAPPER = "def add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n"
 _FULL = _KERNEL + "\n" + _WRAPPER
+# Distinct "fixed" version so dedup check doesn't trigger in tests
+_FIXED = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x  # fixed\n"
 
 # When no grammar: extract_code strips any fences; plain text → adds trailing "\n".
 # Use plain code strings so extract_code returns them unchanged (already end with "\n").
@@ -96,8 +98,8 @@ def test_compile_failure_then_fix():
         (True, ""),                               # compile iter 2
         (True, ""),                               # test iter 2
     ]
-    # LLM responses: translate, fix, review
-    client = _mock_client([_FULL, _FULL, "APPROVED"])
+    # LLM responses: translate, fix (distinct code), review
+    client = _mock_client([_FULL, _FIXED, "APPROVED"])
 
     with patch("core.loop._run_code", side_effect=run_side_effects):
         result = generate_with_refinement(
@@ -121,7 +123,7 @@ def test_test_failure_then_fix():
         (True, ""),                                        # compile iter 2
         (True, ""),                                        # test iter 2
     ]
-    client = _mock_client([_FULL, _FULL, "APPROVED"])
+    client = _mock_client([_FULL, _FIXED, "APPROVED"])
 
     with patch("core.loop._run_code", side_effect=run_side_effects):
         result = generate_with_refinement(
@@ -145,8 +147,8 @@ def test_review_rejection_then_fix():
         (True, ""),  # compile iter 2
         (True, ""),  # test iter 2
     ]
-    # translate, review-reject, fix, review-approve
-    client = _mock_client([_FULL, "Missing masks in tl.load", _FULL, "APPROVED"])
+    # translate, review-reject, fix (distinct code), review-approve
+    client = _mock_client([_FULL, "Missing masks in tl.load", _FIXED, "APPROVED"])
 
     with patch("core.loop._run_code", side_effect=run_side_effects):
         result = generate_with_refinement(
