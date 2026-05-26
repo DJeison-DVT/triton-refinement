@@ -364,3 +364,52 @@ def test_save_trajectory_writes_valid_jsonl():
             obj = json.loads(line)
             assert expected_keys == set(obj.keys())
             assert obj["op_name"] == "test_op"
+
+
+# ---------------------------------------------------------------------------
+# Test: Multi-turn fixer accumulates context
+# ---------------------------------------------------------------------------
+
+
+def test_fixer_accumulates_messages():
+    """After two fix calls, client.generate receives growing message lists."""
+    run_side_effects = [
+        (False, "SyntaxError: line 1"),   # compile iter 1 — fail
+        (False, "NameError: undefined"),   # compile iter 2 — fail
+        (True, ""),                        # compile iter 3 — pass
+        (True, ""),                        # test iter 3 — pass
+    ]
+    fix1 = "```python\n@triton.jit\ndef kernel(): pass  # fix1\n\ndef add_triton(x, y): return x\n```"
+    fix2 = "```python\n@triton.jit\ndef kernel(): pass  # fix2\n\ndef add_triton(x, y): return x\n```"
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=[fix1, fix2, "APPROVED"],
+    )
+    with patch("core.loop._run_code", side_effect=run_side_effects):
+        result = generate_with_refinement(
+            "add", PYTORCH_CODE, "assert True\n", client, max_iters=5
+        )
+
+    assert result.passed is True
+    # generate was called 3 times: fix1, fix2, review
+    assert client.generate.call_count == 3
+
+    # Both fix calls share the same fixer_messages list (mutated in place).
+    # After the loop, the list has grown to:
+    #   [system, user, assistant(fix1), user(followup), assistant(fix2)] → 5 items.
+    # MagicMock stores a reference, so both call args point to the final list.
+    first_fix_call = client.generate.call_args_list[0]
+    first_msgs = first_fix_call[0][0]  # positional arg: messages (same list object)
+    assert first_msgs[0]["role"] == "system"  # first message is always system
+    assert first_msgs[1]["role"] == "user"    # second is the initial user prompt
+
+    # The final fixer thread has accumulated all turns: 5 messages total
+    assert len(first_msgs) == 5
+
+    # Roles alternate correctly across the full thread
+    roles = [m["role"] for m in first_msgs]
+    assert roles == ["system", "user", "assistant", "user", "assistant"]
+
+    # Both fix calls referenced the same growing list object
+    second_fix_call = client.generate.call_args_list[1]
+    assert second_fix_call[0][0] is first_msgs  # same object, confirms multi-turn sharing
