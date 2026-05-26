@@ -26,11 +26,20 @@ PYTORCH_CODE = "def add(x, y):\n    return x + y\n"
 # For free-form (no grammar) the single response goes through extract_code, which adds "\n".
 
 
-def _mock_client(responses: list[str]) -> MagicMock:
-    """Return a MagicMock LLMClient whose complete()/generate() iterate through responses."""
+def _mock_client(
+    complete_responses: list[str],
+    generate_responses: list[str] | None = None,
+) -> MagicMock:
+    """Return a MagicMock LLMClient with separate complete/generate responses.
+
+    complete_responses: responses for the completion API (translation).
+    generate_responses: responses for the chat API (fix + review).
+    """
     client = MagicMock()
-    client.generate = MagicMock(side_effect=responses)
-    client.complete = MagicMock(side_effect=responses)
+    client.complete = MagicMock(side_effect=complete_responses)
+    client.generate = MagicMock(
+        side_effect=generate_responses if generate_responses else []
+    )
     return client
 
 
@@ -39,7 +48,8 @@ _KERNEL = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass\n"
 _WRAPPER = "def add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n"
 _FULL = _KERNEL + "\n" + _WRAPPER
 # Distinct "fixed" version so dedup check doesn't trigger in tests
-_FIXED = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x  # fixed\n"
+_FIXED_CODE = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x  # fixed\n"
+_FIXED = f"```python\n{_FIXED_CODE}```"
 
 # When no grammar: extract_code strips any fences; plain text → adds trailing "\n".
 # Use plain code strings so extract_code returns them unchanged (already end with "\n").
@@ -75,15 +85,18 @@ def test_extract_code_bare_fence():
 
 @patch("core.loop._run_code", return_value=(True, ""))
 def test_happy_path(mock_run):
-    """No grammar: one LLM call → compile → test → review APPROVED → passed=True."""
-    client = _mock_client([_FULL, "APPROVED"])
+    """No grammar: translate (complete) → compile → test → review APPROVED (generate)."""
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=["APPROVED"],
+    )
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, max_iters=5
     )
     assert result.passed is True
     assert result.total_iterations == 1
-    # complete called twice: translate + review
-    assert client.complete.call_count == 2
+    assert client.complete.call_count == 1  # translate only
+    assert client.generate.call_count == 1  # review only
 
 
 # ---------------------------------------------------------------------------
@@ -93,20 +106,19 @@ def test_happy_path(mock_run):
 
 @patch("core.loop._run_code", return_value=(True, ""))
 def test_grammar_two_step(mock_run):
-    """With grammar: kernel call (grammar) + wrapper call → combined code."""
-    # kernel response is raw (no extraction), wrapper goes through extract_code
-    client = _mock_client([_KERNEL, _WRAPPER, "APPROVED"])
+    """With grammar: kernel (complete, grammar) + wrapper (complete) → review (generate)."""
+    client = _mock_client(
+        complete_responses=[_KERNEL, _WRAPPER],
+        generate_responses=["APPROVED"],
+    )
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, grammar="fake", max_iters=5
     )
     assert result.passed is True
-    # final_code must contain content from both kernel and wrapper
     assert "@triton.jit" in result.final_code
     assert "add_triton" in result.final_code
-    # First complete call passed grammar kwarg
     first_call_kwargs = client.complete.call_args_list[0][1]
     assert first_call_kwargs.get("grammar") == "fake"
-    # Second complete call (wrapper) has no grammar
     second_call_kwargs = client.complete.call_args_list[1][1]
     assert second_call_kwargs.get("grammar") is None
 
@@ -117,20 +129,20 @@ def test_grammar_two_step(mock_run):
 
 
 def test_compile_failure_then_fix():
-    """First _run_code fails (compile), fix is called, second run passes → passed=True."""
+    """Compile fails → fixer called (generate) → second run passes."""
     run_side_effects = [
         (False, "SyntaxError: invalid syntax"),  # compile iter 1
         (True, ""),                               # compile iter 2
         (True, ""),                               # test iter 2
     ]
-    # LLM responses: translate, fix (distinct code), review
-    client = _mock_client([_FULL, _FIXED, "APPROVED"])
-
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=[_FIXED, "APPROVED"],
+    )
     with patch("core.loop._run_code", side_effect=run_side_effects):
         result = generate_with_refinement(
             "add", PYTORCH_CODE, "assert True\n", client, max_iters=5
         )
-
     assert result.passed is True
     assert result.total_iterations == 2
 
@@ -141,20 +153,21 @@ def test_compile_failure_then_fix():
 
 
 def test_test_failure_then_fix():
-    """Compile passes, test fails, fix called, second iteration passes → passed=True."""
+    """Compile passes, test fails, fix called, second iteration passes."""
     run_side_effects = [
-        (True, ""),                                        # compile iter 1
-        (False, "AssertionError: values differ"),         # test iter 1
-        (True, ""),                                        # compile iter 2
-        (True, ""),                                        # test iter 2
+        (True, ""),                                # compile iter 1
+        (False, "AssertionError: values differ"),  # test iter 1
+        (True, ""),                                # compile iter 2
+        (True, ""),                                # test iter 2
     ]
-    client = _mock_client([_FULL, _FIXED, "APPROVED"])
-
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=[_FIXED, "APPROVED"],
+    )
     with patch("core.loop._run_code", side_effect=run_side_effects):
         result = generate_with_refinement(
             "add", PYTORCH_CODE, "assert True\n", client, max_iters=5
         )
-
     assert result.passed is True
     assert result.total_iterations == 2
 
@@ -165,21 +178,25 @@ def test_test_failure_then_fix():
 
 
 def test_review_rejection_then_fix():
-    """Compile ok, test ok, reviewer rejects, fix, retry approved → passed=True."""
+    """Compile ok, test ok, reviewer rejects, fix, retry approved."""
     run_side_effects = [
         (True, ""),  # compile iter 1
         (True, ""),  # test iter 1
         (True, ""),  # compile iter 2
         (True, ""),  # test iter 2
     ]
-    # translate, review-reject, fix (distinct code), review-approve
-    client = _mock_client([_FULL, "Missing masks in tl.load", _FIXED, "APPROVED"])
-
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=[
+            "Missing masks in tl.load",  # review rejects
+            _FIXED,                       # fix
+            "APPROVED",                   # review approves
+        ],
+    )
     with patch("core.loop._run_code", side_effect=run_side_effects):
         result = generate_with_refinement(
             "add", PYTORCH_CODE, "assert True\n", client, max_iters=5
         )
-
     assert result.passed is True
     assert result.total_iterations == 2
 
@@ -193,11 +210,12 @@ def test_review_rejection_then_fix():
 def test_max_iterations_exhausted(mock_run):
     """_run_code always fails → loop exhausts max_iters → passed=False."""
     max_iters = 3
-    # translate + distinct fix per iteration (avoid dedup early stop)
-    # Last iteration doesn't call fixer (no point fixing on final iter)
-    fix1 = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass  # fix1\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n"
-    fix2 = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass  # fix2\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n"
-    client = _mock_client([_FULL, fix1, fix2])
+    fix1 = "```python\n@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass  # fix1\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n```"
+    fix2 = "```python\n@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass  # fix2\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n```"
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=[fix1, fix2],
+    )
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, max_iters=max_iters
     )
@@ -213,7 +231,10 @@ def test_max_iterations_exhausted(mock_run):
 @patch("core.loop._run_code", return_value=(True, ""))
 def test_trajectory_stages(mock_run):
     """Trajectory must contain 'translate', 'compile', 'test', 'review' stages."""
-    client = _mock_client([_FULL, "APPROVED"])
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=["APPROVED"],
+    )
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, max_iters=5
     )
@@ -232,7 +253,10 @@ def test_trajectory_stages(mock_run):
 @patch("core.loop._run_code", return_value=(True, ""))
 def test_trajectory_timestamps(mock_run):
     """Each trajectory entry must have a non-empty timestamp string."""
-    client = _mock_client([_FULL, "APPROVED"])
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=["APPROVED"],
+    )
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, max_iters=5
     )
@@ -249,7 +273,10 @@ def test_trajectory_timestamps(mock_run):
 @patch("core.loop._run_code", return_value=(True, ""))
 def test_pattern_memory_on_success(mock_run):
     """On success, pattern_memory.store is called with outcome='pass'."""
-    client = _mock_client([_FULL, "APPROVED"])
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=["APPROVED"],
+    )
     mem = InMemoryPatternMemory()
     generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, max_iters=5, pattern_memory=mem
@@ -269,7 +296,11 @@ def test_pattern_memory_on_success(mock_run):
 def test_pattern_memory_on_failure(mock_run):
     """On failure (exhausted), pattern_memory.store is called with outcome='fail'."""
     max_iters = 2
-    client = _mock_client([_FULL] + [_FULL] * max_iters)
+    fix1 = "```python\n@triton.jit\ndef kernel(): pass  # fix1\n\ndef add_triton(x, y): return x\n```"
+    client = _mock_client(
+        complete_responses=[_FULL],
+        generate_responses=[fix1],
+    )
     mem = InMemoryPatternMemory()
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, max_iters=max_iters, pattern_memory=mem
