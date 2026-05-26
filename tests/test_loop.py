@@ -10,6 +10,7 @@ import pytest
 from core.loop import (
     IterationLog,
     RefinementResult,
+    _extract_code,
     generate_with_refinement,
     save_trajectory,
 )
@@ -26,9 +27,10 @@ PYTORCH_CODE = "def add(x, y):\n    return x + y\n"
 
 
 def _mock_client(responses: list[str]) -> MagicMock:
-    """Return a MagicMock LLMClient whose generate() iterates through responses."""
+    """Return a MagicMock LLMClient whose complete()/generate() iterate through responses."""
     client = MagicMock()
     client.generate = MagicMock(side_effect=responses)
+    client.complete = MagicMock(side_effect=responses)
     return client
 
 
@@ -41,6 +43,29 @@ _FIXED = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass\n\ndef 
 
 # When no grammar: extract_code strips any fences; plain text → adds trailing "\n".
 # Use plain code strings so extract_code returns them unchanged (already end with "\n").
+
+
+# ---------------------------------------------------------------------------
+# Test: _extract_code helper
+# ---------------------------------------------------------------------------
+
+
+def test_extract_code_from_python_fence():
+    """Extract code from a ```python fence."""
+    raw = "Here is the fix:\n```python\nimport torch\ndef foo():\n    pass\n```\nDone."
+    assert _extract_code(raw) == "import torch\ndef foo():\n    pass"
+
+
+def test_extract_code_no_fence():
+    """When no fence, return the raw response stripped."""
+    raw = "import torch\ndef foo():\n    pass\n"
+    assert _extract_code(raw) == "import torch\ndef foo():\n    pass"
+
+
+def test_extract_code_bare_fence():
+    """Extract code from a bare ``` fence (no language tag)."""
+    raw = "```\nimport torch\ndef foo():\n    pass\n```"
+    assert _extract_code(raw) == "import torch\ndef foo():\n    pass"
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +82,8 @@ def test_happy_path(mock_run):
     )
     assert result.passed is True
     assert result.total_iterations == 1
-    # generate called twice: translate + review
-    assert client.generate.call_count == 2
+    # complete called twice: translate + review
+    assert client.complete.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +103,11 @@ def test_grammar_two_step(mock_run):
     # final_code must contain content from both kernel and wrapper
     assert "@triton.jit" in result.final_code
     assert "add_triton" in result.final_code
-    # First generate call passed grammar kwarg
-    first_call_kwargs = client.generate.call_args_list[0][1]
+    # First complete call passed grammar kwarg
+    first_call_kwargs = client.complete.call_args_list[0][1]
     assert first_call_kwargs.get("grammar") == "fake"
-    # Second generate call (wrapper) has no grammar
-    second_call_kwargs = client.generate.call_args_list[1][1]
+    # Second complete call (wrapper) has no grammar
+    second_call_kwargs = client.complete.call_args_list[1][1]
     assert second_call_kwargs.get("grammar") is None
 
 
@@ -168,8 +193,11 @@ def test_review_rejection_then_fix():
 def test_max_iterations_exhausted(mock_run):
     """_run_code always fails → loop exhausts max_iters → passed=False."""
     max_iters = 3
-    # translate + one fix per iteration
-    client = _mock_client([_FULL] + [_FULL] * max_iters)
+    # translate + distinct fix per iteration (avoid dedup early stop)
+    # Last iteration doesn't call fixer (no point fixing on final iter)
+    fix1 = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass  # fix1\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n"
+    fix2 = "@triton.jit\ndef kernel(x_ptr, BLOCK: tl.constexpr):\n    pass  # fix2\n\ndef add_triton(x, y):\n    kernel[(1,)](x)\n    return x\n"
+    client = _mock_client([_FULL, fix1, fix2])
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, max_iters=max_iters
     )

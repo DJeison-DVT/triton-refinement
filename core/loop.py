@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,6 @@ from pathlib import Path
 
 from core.llm_client import LLMClient
 from core.pattern_memory import PatternMemory
-from prompts import extract_code
 from prompts import translator, reviewer, fixer
 
 
@@ -51,15 +51,22 @@ class RefinementResult:
 # ---------------------------------------------------------------------------
 
 
-def _hash_messages(messages: list[dict]) -> str:
-    """Return the first 16 chars of the SHA256 hash of JSON-serialized messages."""
-    serialized = json.dumps(messages, sort_keys=True)
-    return hashlib.sha256(serialized.encode()).hexdigest()[:16]
-
-
 def _now() -> str:
     """Return UTC ISO8601 timestamp."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _extract_code(response: str) -> str:
+    """Extract code from a chat response that may contain markdown fences.
+
+    Looks for ```python or bare ``` fences. If none found, returns the
+    response as-is (stripped). This handles both instruct models that
+    wrap code in fences and models that output raw code.
+    """
+    match = re.search(r"```(?:python)?\s*\n(.*?)```", response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return response.strip()
 
 
 def _run_code(code: str, timeout: int = 120) -> tuple[bool, str]:
@@ -109,13 +116,13 @@ def _translate(
 ) -> tuple[str, list[IterationLog]]:
     """Translate PyTorch code to Triton.
 
-    With grammar (two-step):
-      1. Generate kernel with grammar constraint (raw, no extraction).
-      2. Generate wrapper free-form → extract_code → wrapper_code.
-      3. Combine: kernel_code.rstrip() + "\\n\\n" + wrapper_code.
+    With grammar (two-step, completion API):
+      1. Generate kernel with grammar constraint via complete().
+      2. Generate wrapper free-form via complete() with stop sequences.
+      3. Combine: kernel_code + wrapper_code.
 
-    Without grammar (one-step):
-      1. Generate full module free-form → extract_code → triton_code.
+    Without grammar (one-step, completion API):
+      1. Generate full module via complete() with stop sequences.
 
     Returns:
         Tuple of (triton_code, trajectory_entries).
@@ -123,14 +130,14 @@ def _translate(
     logs: list[IterationLog] = []
 
     if grammar:
-        # --- Step 1: grammar-constrained kernel ---
-        kernel_messages = translator.format_kernel_messages(pytorch_code)
-        kernel_code = client.generate(kernel_messages, grammar=grammar)
+        # --- Step 1: grammar-constrained kernel (completion API) ---
+        kernel_prompt = translator.format_kernel_prompt_full(pytorch_code)
+        kernel_code = client.complete(kernel_prompt, grammar=grammar, max_tokens=1024)
         logs.append(
             IterationLog(
                 iteration=0,
                 stage="translate",
-                prompt_hash=_hash_messages(kernel_messages),
+                prompt_hash=hashlib.sha256(kernel_prompt.encode()).hexdigest()[:16],
                 generation=kernel_code,
                 outcome="pass",
                 error=None,
@@ -138,15 +145,18 @@ def _translate(
             )
         )
 
-        # --- Step 2: free-form wrapper ---
-        wrapper_messages = translator.format_wrapper_messages(pytorch_code, kernel_code)
-        wrapper_raw = client.generate(wrapper_messages)
-        wrapper_code = extract_code(wrapper_raw)
+        # --- Step 2: free-form wrapper (completion API) ---
+        wrapper_prompt = translator.format_wrapper_prompt(pytorch_code, kernel_code)
+        wrapper_code = client.complete(
+            wrapper_prompt,
+            max_tokens=1024,
+            stop=["\n\n# ", "\n\nif __name__"],
+        )
         logs.append(
             IterationLog(
                 iteration=0,
                 stage="translate",
-                prompt_hash=_hash_messages(wrapper_messages),
+                prompt_hash=hashlib.sha256(wrapper_prompt.encode()).hexdigest()[:16],
                 generation=wrapper_code,
                 outcome="pass",
                 error=None,
@@ -154,17 +164,24 @@ def _translate(
             )
         )
 
-        triton_code = kernel_code.rstrip() + "\n\n" + wrapper_code
+        # kernel_code includes imports + @triton.jit + func (from grammar)
+        # wrapper_code is the function body (from completion)
+        # Add import torch for the wrapper's torch.empty_like etc.
+        triton_code = "import torch\n" + kernel_code.rstrip() + "\n\n" + wrapper_code
     else:
-        # --- One-step free-form ---
-        messages = translator.format_messages(pytorch_code)
-        raw = client.generate(messages)
-        triton_code = extract_code(raw)
+        # --- One-step free-form (completion API) ---
+        full_prompt = translator.format_prompt(pytorch_code)
+        raw = client.complete(
+            full_prompt,
+            max_tokens=2048,
+            stop=["\n\n# ", "\n\nif __name__"],
+        )
+        triton_code = "import torch\nimport triton\nimport triton.language as tl\n\n" + raw
         logs.append(
             IterationLog(
                 iteration=0,
                 stage="translate",
-                prompt_hash=_hash_messages(messages),
+                prompt_hash=hashlib.sha256(full_prompt.encode()).hexdigest()[:16],
                 generation=triton_code,
                 outcome="pass",
                 error=None,
@@ -195,14 +212,20 @@ def _fix(
     Returns:
         The new (fixed) triton_code.
     """
-    messages = fixer.format_messages(pytorch_code, triton_code, error)
-    raw = client.generate(messages)
-    new_code = extract_code(raw)
+    fix_prompt = fixer.format_prompt(pytorch_code, triton_code, error)
+    raw = client.complete(
+        fix_prompt,
+        max_tokens=2048,
+        temperature=0.4,
+        stop=["\n\n# ", "\n\nif __name__"],
+    )
+    # Only keep the imports suffix + completion, not the entire prompt
+    new_code = "import torch\nimport triton\nimport triton.language as tl\n\n" + raw
     trajectory.append(
         IterationLog(
             iteration=iteration,
             stage="fix",
-            prompt_hash=_hash_messages(messages),
+            prompt_hash=hashlib.sha256(fix_prompt.encode()).hexdigest()[:16],
             generation=new_code,
             outcome="pass",
             error=None,
@@ -273,6 +296,7 @@ def generate_with_refinement(
     _write_work_file(work_dir, f"{op_name}_test.py", test_code)
 
     # Step 2: Refinement loop
+    i = 0
     for i in range(1, max_iters + 1):
         _log(f"  [iter {i}/{max_iters}] Compile check...", verbose)
 
@@ -292,6 +316,8 @@ def generate_with_refinement(
         if not compile_ok:
             err_first_line = compile_err.strip().split("\n")[-1][:120]
             _log(f"  [iter {i}/{max_iters}] Compile FAIL: {err_first_line}", verbose)
+            if i == max_iters:
+                break
             _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
             new_code = _fix(client, pytorch_code, triton_code, compile_err, trajectory, i)
             if new_code == triton_code:
@@ -320,6 +346,8 @@ def generate_with_refinement(
         if not test_ok:
             err_first_line = test_err.strip().split("\n")[-1][:120]
             _log(f"  [iter {i}/{max_iters}] Test FAIL: {err_first_line}", verbose)
+            if i == max_iters:
+                break
             _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
             new_code = _fix(client, pytorch_code, triton_code, test_err, trajectory, i)
             if new_code == triton_code:
@@ -333,14 +361,14 @@ def generate_with_refinement(
 
         # --- Review ---
         patterns = pattern_memory.retrieve(pytorch_code) if pattern_memory else None
-        review_messages = reviewer.format_messages(triton_code, pytorch_code, patterns=patterns)
-        review_response = client.generate(review_messages)
+        review_prompt = reviewer.format_prompt(triton_code, pytorch_code, patterns=patterns)
+        review_response = client.complete(review_prompt, stop=["\n\n# "])
         approved = review_response.strip().startswith("APPROVED")
         trajectory.append(
             IterationLog(
                 iteration=i,
                 stage="review",
-                prompt_hash=_hash_messages(review_messages),
+                prompt_hash=hashlib.sha256(review_prompt.encode()).hexdigest()[:16],
                 generation=review_response,
                 outcome="pass" if approved else "fail",
                 error=None if approved else review_response,
@@ -364,6 +392,8 @@ def generate_with_refinement(
         # Reviewer rejected — fix with the feedback
         feedback_preview = review_response.strip().split("\n")[0][:120]
         _log(f"  [iter {i}/{max_iters}] Review REJECTED: {feedback_preview}", verbose)
+        if i == max_iters:
+            break
         _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
         new_code = _fix(client, pytorch_code, triton_code, review_response, trajectory, i)
         if new_code == triton_code:
@@ -382,7 +412,7 @@ def generate_with_refinement(
         final_code=triton_code,
         test_code=test_code,
         passed=False,
-        total_iterations=max_iters,
+        total_iterations=i,
         trajectory=trajectory,
     )
 
