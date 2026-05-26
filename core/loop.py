@@ -193,46 +193,57 @@ def _translate(
 
 
 # ---------------------------------------------------------------------------
-# Fix
+# Fix (multi-turn chat)
 # ---------------------------------------------------------------------------
 
 
-def _fix(
+def _chat_fix(
     client: LLMClient,
     pytorch_code: str,
     triton_code: str,
     error: str,
+    fixer_messages: list[dict[str, str]],
     trajectory: list[IterationLog],
     iteration: int,
-) -> str:
-    """Ask the fixer to fix triton_code given an error.
+) -> tuple[str, list[dict[str, str]]]:
+    """Ask the fixer to fix triton_code via multi-turn chat.
 
-    Logs the fix step to trajectory.
+    On the first call, initializes fixer_messages with the system prompt
+    and initial context. On subsequent calls, appends a follow-up user
+    message. The assistant's response is appended to the thread.
 
     Returns:
-        The new (fixed) triton_code.
+        Tuple of (new_triton_code, updated fixer_messages).
     """
-    fix_prompt = fixer.format_prompt(pytorch_code, triton_code, error)
-    raw = client.complete(
-        fix_prompt,
-        max_tokens=2048,
-        temperature=0.4,
-        stop=["\n\n# ", "\n\nif __name__"],
-    )
-    # Only keep the imports suffix + completion, not the entire prompt
-    new_code = "import torch\nimport triton\nimport triton.language as tl\n\n" + raw
+    if not fixer_messages:
+        # First fix call — initialize the conversation
+        fixer_messages = fixer.format_messages(pytorch_code, triton_code, error)
+    else:
+        # Subsequent call — append follow-up
+        fixer_messages.append(fixer.format_followup(triton_code, error))
+
+    raw = client.generate(fixer_messages, temperature=0.4, max_tokens=2048)
+
+    # Append assistant response to conversation thread
+    fixer_messages.append({"role": "assistant", "content": raw})
+
+    # Extract code from potential markdown fences
+    new_code = _extract_code(raw)
+
     trajectory.append(
         IterationLog(
             iteration=iteration,
             stage="fix",
-            prompt_hash=hashlib.sha256(fix_prompt.encode()).hexdigest()[:16],
+            prompt_hash=hashlib.sha256(
+                fixer_messages[-2]["content"].encode()
+            ).hexdigest()[:16],
             generation=new_code,
             outcome="pass",
             error=None,
             timestamp=_now(),
         )
     )
-    return new_code
+    return new_code, fixer_messages
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +307,7 @@ def generate_with_refinement(
     _write_work_file(work_dir, f"{op_name}_test.py", test_code)
 
     # Step 2: Refinement loop
+    fixer_messages: list[dict[str, str]] = []  # built on first fix call
     i = 0
     for i in range(1, max_iters + 1):
         _log(f"  [iter {i}/{max_iters}] Compile check...", verbose)
@@ -319,11 +331,14 @@ def generate_with_refinement(
             if i == max_iters:
                 break
             _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
-            new_code = _fix(client, pytorch_code, triton_code, compile_err, trajectory, i)
-            if new_code == triton_code:
+            old_code = triton_code
+            triton_code, fixer_messages = _chat_fix(
+                client, pytorch_code, triton_code, compile_err,
+                fixer_messages, trajectory, i,
+            )
+            if triton_code == old_code:
                 _log(f"  [iter {i}/{max_iters}] Fixer produced identical code — stopping early", verbose)
                 break
-            triton_code = new_code
             _write_work_file(work_dir, f"{op_name}.py", triton_code)
             continue
 
@@ -349,26 +364,31 @@ def generate_with_refinement(
             if i == max_iters:
                 break
             _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
-            new_code = _fix(client, pytorch_code, triton_code, test_err, trajectory, i)
-            if new_code == triton_code:
+            old_code = triton_code
+            triton_code, fixer_messages = _chat_fix(
+                client, pytorch_code, triton_code, test_err,
+                fixer_messages, trajectory, i,
+            )
+            if triton_code == old_code:
                 _log(f"  [iter {i}/{max_iters}] Fixer produced identical code — stopping early", verbose)
                 break
-            triton_code = new_code
             _write_work_file(work_dir, f"{op_name}.py", triton_code)
             continue
 
         _log(f"  [iter {i}/{max_iters}] Tests PASS. Reviewing...", verbose)
 
-        # --- Review ---
+        # --- Review (stateless chat call) ---
         patterns = pattern_memory.retrieve(pytorch_code) if pattern_memory else None
-        review_prompt = reviewer.format_prompt(triton_code, pytorch_code, patterns=patterns)
-        review_response = client.complete(review_prompt, stop=["\n\n# "])
+        review_msgs = reviewer.format_messages(triton_code, pytorch_code, patterns=patterns)
+        review_response = client.generate(review_msgs)
         approved = review_response.strip().startswith("APPROVED")
         trajectory.append(
             IterationLog(
                 iteration=i,
                 stage="review",
-                prompt_hash=hashlib.sha256(review_prompt.encode()).hexdigest()[:16],
+                prompt_hash=hashlib.sha256(
+                    review_msgs[-1]["content"].encode()
+                ).hexdigest()[:16],
                 generation=review_response,
                 outcome="pass" if approved else "fail",
                 error=None if approved else review_response,
@@ -389,17 +409,20 @@ def generate_with_refinement(
                 trajectory=trajectory,
             )
 
-        # Reviewer rejected — fix with the feedback
+        # Reviewer rejected — inject feedback into fixer thread
         feedback_preview = review_response.strip().split("\n")[0][:120]
         _log(f"  [iter {i}/{max_iters}] Review REJECTED: {feedback_preview}", verbose)
         if i == max_iters:
             break
         _log(f"  [iter {i}/{max_iters}] Calling fixer...", verbose)
-        new_code = _fix(client, pytorch_code, triton_code, review_response, trajectory, i)
-        if new_code == triton_code:
+        old_code = triton_code
+        triton_code, fixer_messages = _chat_fix(
+            client, pytorch_code, triton_code, review_response,
+            fixer_messages, trajectory, i,
+        )
+        if triton_code == old_code:
             _log(f"  [iter {i}/{max_iters}] Fixer produced identical code — stopping early", verbose)
             break
-        triton_code = new_code
         _write_work_file(work_dir, f"{op_name}.py", triton_code)
 
     # Loop exhausted without approval
