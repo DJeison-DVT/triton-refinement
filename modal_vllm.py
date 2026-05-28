@@ -21,8 +21,8 @@ import modal
 
 APP_NAME = "triton-refinement-vllm"
 
-MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-Coder-7B-Instruct")
-GPU_TYPE = os.environ.get("GPU_TYPE", "L4")
+MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-Coder-7B")
+GPU_TYPE = os.environ.get("GPU_TYPE", "A10G")
 VLLM_PORT = 8000
 MINUTES = 60
 
@@ -51,7 +51,7 @@ model_volume = modal.Volume.from_name(
     scaledown_window=5 * MINUTES,
     volumes={"/root/.cache/huggingface": model_volume},
 )
-@modal.concurrent(max_inputs=10)
+@modal.concurrent(max_inputs=100)
 @modal.web_server(port=VLLM_PORT, startup_timeout=5 * MINUTES)
 def serve():
     """Launch vLLM's OpenAI-compatible server as a subprocess."""
@@ -60,10 +60,8 @@ def serve():
         "--model", MODEL_ID,
         "--host", "0.0.0.0",
         "--port", str(VLLM_PORT),
-        "--guided-decoding-backend", "xgrammar",
         "--max-model-len", "8192",
         "--gpu-memory-utilization", "0.90",
-        "--enforce-eager",
         "--dtype", "auto",
     ])
     subprocess.Popen(cmd, shell=True)

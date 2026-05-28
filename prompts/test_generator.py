@@ -1,38 +1,50 @@
-"""Prompt templates for test generation."""
+"""Prompt templates for test generation.
 
-_SYSTEM = """\
-You are an expert GPU kernel engineer. Given a PyTorch operator implementation, \
-generate comprehensive test code that exercises the operator on GPU.
-
-Your tests should:
-- Import torch and any other necessary libraries
-- Create representative input tensors on CUDA
-- Call the operator and compare results against a reference (e.g., torch built-ins)
-- Cover edge cases: small sizes, large sizes, non-contiguous tensors, etc.
-- Use assertions or pytest-style checks
-
-Output the test code wrapped in a ```python ... ``` markdown fence.\
+Completion-style prompts for base models. The model completes test code
+for a given PyTorch operator.
 """
 
-_USER_TEMPLATE = """\
-Generate GPU kernel tests for the following PyTorch operator:
+# ---------------------------------------------------------------------------
+# Completion-style (base models)
+# ---------------------------------------------------------------------------
 
-```python
+_TEST_TEMPLATE = """\
+# PyTorch operator to test:
 {pytorch_code}
-```
+
+# Test code: create CUDA tensors, call the operator, assert correctness.
+# Cover edge cases: small/large sizes, non-contiguous tensors.
+import torch
+
+def test_{func_name}():
+"""
+
+
+def format_prompt(pytorch_code: str) -> str:
+    """Return completion prefix for test generation."""
+    # Extract function name from first def line
+    func_name = "operator"
+    for line in pytorch_code.strip().split("\n"):
+        if line.startswith("def "):
+            func_name = line.split("(")[0].replace("def ", "").strip()
+            break
+    return _TEST_TEMPLATE.format(pytorch_code=pytorch_code, func_name=func_name)
+
+
+# ---------------------------------------------------------------------------
+# Chat-style (instruct models, backward compat)
+# ---------------------------------------------------------------------------
+
+_SYSTEM = """\
+You are an expert GPU kernel engineer. Generate test code for the given PyTorch \
+operator. Create CUDA tensors, call the operator, compare against PyTorch reference. \
+Cover edge cases. Output in a ```python``` fence.\
 """
 
 
 def format_messages(pytorch_code: str) -> list[dict[str, str]]:
-    """Return OpenAI-style messages for test generation.
-
-    Args:
-        pytorch_code: The PyTorch operator source code.
-
-    Returns:
-        A list of two dicts with 'role' and 'content' keys.
-    """
+    """Return messages for test generation (instruct models)."""
     return [
         {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": _USER_TEMPLATE.format(pytorch_code=pytorch_code)},
+        {"role": "user", "content": f"Generate tests for:\n\n{pytorch_code}"},
     ]
