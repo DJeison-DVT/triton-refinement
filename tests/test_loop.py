@@ -106,10 +106,10 @@ def test_happy_path(mock_run):
 
 @patch("core.loop._run_code", return_value=(True, ""))
 def test_grammar_two_step(mock_run):
-    """With grammar: kernel (complete, grammar) + wrapper (complete) → review (generate)."""
+    """With grammar: kernel (complete, grammar) + wrapper (generate, chat) → review (generate, chat)."""
     client = _mock_client(
-        complete_responses=[_KERNEL, _WRAPPER],
-        generate_responses=["APPROVED"],
+        complete_responses=[_KERNEL],
+        generate_responses=[_WRAPPER, "APPROVED"],
     )
     result = generate_with_refinement(
         "add", PYTORCH_CODE, "assert True\n", client, grammar="fake", max_iters=5
@@ -117,10 +117,11 @@ def test_grammar_two_step(mock_run):
     assert result.passed is True
     assert "@triton.jit" in result.final_code
     assert "add_triton" in result.final_code
+    # Kernel call uses complete with grammar
     first_call_kwargs = client.complete.call_args_list[0][1]
     assert first_call_kwargs.get("grammar") == "fake"
-    second_call_kwargs = client.complete.call_args_list[1][1]
-    assert second_call_kwargs.get("grammar") is None
+    # Wrapper uses generate (chat API)
+    assert client.generate.call_count >= 1
 
 
 # ---------------------------------------------------------------------------

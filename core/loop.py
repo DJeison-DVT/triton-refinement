@@ -130,8 +130,8 @@ def _translate(
     logs: list[IterationLog] = []
 
     if grammar:
-        # --- Step 1: grammar-constrained kernel (completion API) ---
-        kernel_prompt = translator.format_kernel_prompt_full(pytorch_code)
+        # --- Step 1: grammar-constrained kernel ---
+        kernel_prompt = translator.format_kernel_prompt(pytorch_code)
         kernel_code = client.complete(kernel_prompt, grammar=grammar, max_tokens=1024)
         logs.append(
             IterationLog(
@@ -145,18 +145,17 @@ def _translate(
             )
         )
 
-        # --- Step 2: free-form wrapper (completion API) ---
-        wrapper_prompt = translator.format_wrapper_prompt(pytorch_code, kernel_code)
-        wrapper_code = client.complete(
-            wrapper_prompt,
-            max_tokens=1024,
-            stop=["\n\n# ", "\n\nif __name__"],
-        )
+        # --- Step 2: wrapper via chat API ---
+        wrapper_msgs = translator.format_wrapper_messages(pytorch_code, kernel_code)
+        wrapper_raw = client.generate(wrapper_msgs, max_tokens=512)
+        wrapper_code = _extract_code(wrapper_raw)
         logs.append(
             IterationLog(
                 iteration=0,
                 stage="translate",
-                prompt_hash=hashlib.sha256(wrapper_prompt.encode()).hexdigest()[:16],
+                prompt_hash=hashlib.sha256(
+                    wrapper_msgs[-1]["content"].encode()
+                ).hexdigest()[:16],
                 generation=wrapper_code,
                 outcome="pass",
                 error=None,
@@ -164,9 +163,6 @@ def _translate(
             )
         )
 
-        # kernel_code includes imports + @triton.jit + func (from grammar)
-        # wrapper_code is the function body (from completion)
-        # Add import torch for the wrapper's torch.empty_like etc.
         triton_code = "import torch\n" + kernel_code.rstrip() + "\n\n" + wrapper_code
     else:
         # --- One-step free-form (completion API) ---

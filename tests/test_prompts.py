@@ -92,39 +92,30 @@ class TestTranslator:
         msgs = translator.format_messages(code)
         assert code in msgs[1]["content"]
 
-    def test_format_kernel_messages_returns_two_dicts(self):
-        msgs = translator.format_kernel_messages("import torch\n")
-        assert len(msgs) == 2
-        for msg in msgs:
-            assert "role" in msg and "content" in msg
+    def test_format_kernel_prompt_returns_string(self):
+        prompt = translator.format_kernel_prompt("def add(x, y): return x + y")
+        assert isinstance(prompt, str)
+        assert "add" in prompt
 
-    def test_format_kernel_messages_no_markdown_instruction(self):
-        msgs = translator.format_kernel_messages("import torch\n")
-        system_content = msgs[0]["content"]
-        # Should instruct raw output without markdown fences
-        assert any(
-            phrase in system_content.lower()
-            for phrase in ["no markdown", "raw", "no fence", "without fence", "do not use"]
-        )
+    def test_format_kernel_prompt_ends_with_blank_line(self):
+        prompt = translator.format_kernel_prompt("def add(x, y): return x + y")
+        assert prompt.endswith("\n\n")
 
-    def test_format_kernel_messages_code_in_user(self):
+    def test_format_kernel_prompt_contains_pytorch_code(self):
         code = "def pytorch_op(): pass"
-        msgs = translator.format_kernel_messages(code)
-        assert code in msgs[1]["content"]
+        prompt = translator.format_kernel_prompt(code)
+        assert "pytorch_op" in prompt
 
     def test_format_wrapper_messages_returns_two_dicts(self):
-        msgs = translator.format_wrapper_messages("import torch\n", "@triton.jit\ndef kernel(): pass")
+        msgs = translator.format_wrapper_messages("def add(x, y): pass", "@triton.jit\ndef kernel(): pass")
         assert len(msgs) == 2
         for msg in msgs:
             assert "role" in msg and "content" in msg
 
-    def test_format_wrapper_messages_both_codes_appear(self):
-        pytorch_code = "def pytorch_op(): pass"
-        kernel_code = "@triton.jit\ndef kernel(): pass"
-        msgs = translator.format_wrapper_messages(pytorch_code, kernel_code)
-        combined = msgs[0]["content"] + msgs[1]["content"]
-        assert pytorch_code in combined
-        assert kernel_code in combined
+    def test_format_wrapper_messages_kernel_in_user(self):
+        kernel_code = "@triton.jit\ndef my_kernel(): pass"
+        msgs = translator.format_wrapper_messages("def add(x, y): pass", kernel_code)
+        assert kernel_code in msgs[1]["content"]
 
 
 # ---------------------------------------------------------------------------
