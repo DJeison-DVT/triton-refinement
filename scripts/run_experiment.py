@@ -27,7 +27,7 @@ from core.grammar import load_grammar
 from core.llm_client import LLMClient
 from core.loop import generate_with_refinement, save_trajectory, build_op_result
 from core.memory_inmemory import InMemoryPatternMemory
-from prompts import test_generator
+from prompts import extract_code, test_generator
 
 
 def set_seed(seed: int):
@@ -143,15 +143,9 @@ def run_single(
 
         print(f"[{idx + 1}/{total}] {op.op_name}", flush=True)
 
-        test_prompt = test_generator.format_prompt(op.pytorch_code)
-        raw_tests = client.complete(test_prompt, stop=["\n\n# "])
-        # Keep the test function stub + completion, not the full prompt
-        func_name = "operator"
-        for line in op.pytorch_code.strip().split("\n"):
-            if line.startswith("def "):
-                func_name = line.split("(")[0].replace("def ", "").strip()
-                break
-        test_code = f"import torch\n\ndef test_{func_name}():\n" + raw_tests
+        test_msgs = test_generator.format_messages(op.pytorch_code)
+        raw_tests = client.generate(test_msgs, max_tokens=1024)
+        test_code = extract_code(raw_tests)
 
         result = generate_with_refinement(
             op.op_name, op.pytorch_code, test_code, client,

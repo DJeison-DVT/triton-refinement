@@ -4,20 +4,20 @@
 
   "models": [
     {
-      "name": "Qwen2.5-Coder-7B",
-      "hf_id": "Qwen/Qwen2.5-Coder-7B",
+      "name": "Qwen2.5-Coder-7B-Instruct",
+      "hf_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
       "params": "7B",
       "role": "headline"
     },
     {
-      "name": "DeepSeek-Coder-6.7B",
-      "hf_id": "deepseek-ai/deepseek-coder-6.7b-base",
+      "name": "DeepSeek-Coder-6.7B-Instruct",
+      "hf_id": "deepseek-ai/deepseek-coder-6.7b-instruct",
       "params": "6.7B",
       "role": "comparison"
     },
     {
-      "name": "CodeGemma-7B",
-      "hf_id": "google/codegemma-7b",
+      "name": "CodeGemma-7B-IT",
+      "hf_id": "google/codegemma-7b-it",
       "params": "7B",
       "role": "comparison"
     }

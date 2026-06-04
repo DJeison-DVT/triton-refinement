@@ -67,7 +67,7 @@ def run(
     from core.llm_client import LLMClient
     from core.loop import generate_with_refinement, save_trajectory, build_op_result
     from core.memory_inmemory import InMemoryPatternMemory
-    from prompts import test_generator
+    from prompts import extract_code, test_generator
 
     import random
     random.seed(seed)
@@ -96,14 +96,9 @@ def run(
     for idx, op in enumerate(ops):
         print(f"[{idx + 1}/{len(ops)}] {op.op_name}")
 
-        test_prompt = test_generator.format_prompt(op.pytorch_code)
-        raw_tests = client.complete(test_prompt, stop=["\n\n# "])
-        func_name = "operator"
-        for line in op.pytorch_code.strip().split("\n"):
-            if line.startswith("def "):
-                func_name = line.split("(")[0].replace("def ", "").strip()
-                break
-        test_code = f"import torch\n\ndef test_{func_name}():\n" + raw_tests
+        test_msgs = test_generator.format_messages(op.pytorch_code)
+        raw_tests = client.generate(test_msgs, max_tokens=1024)
+        test_code = extract_code(raw_tests)
 
         result = generate_with_refinement(
             op_name=op.op_name,

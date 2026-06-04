@@ -21,7 +21,7 @@ import modal
 
 APP_NAME = "triton-refinement-vllm"
 
-MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-Coder-7B")
+MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-Coder-7B-Instruct")
 GPU_TYPE = os.environ.get("GPU_TYPE", "A10G")
 VLLM_PORT = 8000
 MINUTES = 60
@@ -60,7 +60,7 @@ def serve():
         "--model", MODEL_ID,
         "--host", "0.0.0.0",
         "--port", str(VLLM_PORT),
-        "--max-model-len", "8192",
+        "--max-model-len", "16384",
         "--gpu-memory-utilization", "0.90",
         "--dtype", "auto",
     ])

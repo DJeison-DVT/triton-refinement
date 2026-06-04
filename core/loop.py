@@ -69,6 +69,25 @@ def _extract_code(response: str) -> str:
     return response.strip()
 
 
+def _clean_kernel(kernel_code: str) -> str:
+    """Strip trailing non-code from grammar-constrained kernel output.
+
+    The grammar may allow the model to generate trailing content after
+    the kernel function (markdown fences, natural language, examples).
+    This strips everything after the last indented code line.
+    """
+    lines = kernel_code.split("\n")
+    # Find the last line that looks like code (starts with space/def/import/@)
+    last_code = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and (line.startswith("    ") or line.startswith("def ")
+                         or line.startswith("import ") or line.startswith("from ")
+                         or line.startswith("@")):
+            last_code = i
+    return "\n".join(lines[:last_code + 1])
+
+
 def _run_code(code: str, timeout: int = 120) -> tuple[bool, str]:
     """Write code to a temp file, run it, and return (success, stderr).
 
@@ -132,7 +151,8 @@ def _translate(
     if grammar:
         # --- Step 1: grammar-constrained kernel ---
         kernel_prompt = translator.format_kernel_prompt(pytorch_code)
-        kernel_code = client.complete(kernel_prompt, grammar=grammar, max_tokens=1024)
+        kernel_raw = client.complete(kernel_prompt, grammar=grammar, max_tokens=1024)
+        kernel_code = _clean_kernel(kernel_raw)
         logs.append(
             IterationLog(
                 iteration=0,
@@ -163,7 +183,15 @@ def _translate(
             )
         )
 
-        triton_code = "import torch\n" + kernel_code.rstrip() + "\n\n" + wrapper_code
+        # Ensure all imports are present regardless of what grammar/clean produced
+        imports = "import torch\nimport triton\nimport triton.language as tl\n\n"
+        # Strip any existing imports from kernel to avoid duplicates
+        kernel_lines = kernel_code.strip().split("\n")
+        kernel_body = "\n".join(
+            l for l in kernel_lines
+            if not l.startswith("import ") and not l.startswith("from ")
+        )
+        triton_code = imports + kernel_body.strip() + "\n\n" + wrapper_code
     else:
         # --- One-step free-form (completion API) ---
         full_prompt = translator.format_prompt(pytorch_code)

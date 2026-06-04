@@ -106,16 +106,15 @@ class TestTranslator:
         prompt = translator.format_kernel_prompt(code)
         assert "pytorch_op" in prompt
 
-    def test_format_wrapper_messages_returns_two_dicts(self):
+    def test_format_wrapper_messages_has_example(self):
         msgs = translator.format_wrapper_messages("def add(x, y): pass", "@triton.jit\ndef kernel(): pass")
-        assert len(msgs) == 2
-        for msg in msgs:
-            assert "role" in msg and "content" in msg
+        assert len(msgs) == 4  # system + example user + example assistant + target user
+        assert msgs[2]["role"] == "assistant"  # one-shot example response
 
     def test_format_wrapper_messages_kernel_in_user(self):
         kernel_code = "@triton.jit\ndef my_kernel(): pass"
         msgs = translator.format_wrapper_messages("def add(x, y): pass", kernel_code)
-        assert kernel_code in msgs[1]["content"]
+        assert kernel_code in msgs[3]["content"]  # target user message
 
 
 # ---------------------------------------------------------------------------
