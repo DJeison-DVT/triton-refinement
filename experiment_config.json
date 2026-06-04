@@ -33,16 +33,6 @@
       "max_iterations": 5,
       "grammar_constrained": true,
       "pattern_memory": "inmemory"
-    },
-    "single-shot-nogrammar": {
-      "max_iterations": 1,
-      "grammar_constrained": false,
-      "pattern_memory": false
-    },
-    "refinement-nogrammar": {
-      "max_iterations": 5,
-      "grammar_constrained": false,
-      "pattern_memory": "inmemory"
     }
   },
 
