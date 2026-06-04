@@ -13,17 +13,18 @@ class TestPatternMemoryABC:
 
 
 class TestInMemoryPatternMemory:
-    def test_starts_empty(self):
-        """InMemoryPatternMemory starts empty; retrieve returns []."""
+    def test_starts_with_seed_patterns(self):
+        """InMemoryPatternMemory starts with pre-seeded Triton patterns."""
+        from core.triton_patterns import TRITON_PATTERNS
         mem = InMemoryPatternMemory()
-        result = mem.retrieve("any context")
-        assert result == []
+        result = mem.retrieve("any context", top_k=100)
+        assert len(result) == len(TRITON_PATTERNS)
 
     def test_store_and_retrieve_returns_entry_with_correct_keys(self):
         """store + retrieve returns stored entry with op_name, pattern, outcome keys."""
         mem = InMemoryPatternMemory()
         mem.store(op_name="add", pattern="use tl.load with mask", outcome="pass")
-        result = mem.retrieve("any context")
+        result = mem.retrieve("any context", top_k=1)
         assert len(result) == 1
         entry = result[0]
         assert "op_name" in entry
@@ -34,13 +35,14 @@ class TestInMemoryPatternMemory:
         assert entry["outcome"] == "pass"
 
     def test_multiple_stores_accumulate(self):
-        """Multiple stores accumulate entries."""
+        """Multiple stores accumulate on top of seed patterns."""
+        from core.triton_patterns import TRITON_PATTERNS
         mem = InMemoryPatternMemory()
         mem.store("op_a", "pattern_a", "pass")
         mem.store("op_b", "pattern_b", "fail")
         mem.store("op_c", "pattern_c", "pass")
-        result = mem.retrieve("any context", top_k=10)
-        assert len(result) == 3
+        result = mem.retrieve("any context", top_k=100)
+        assert len(result) == len(TRITON_PATTERNS) + 3
 
     def test_retrieve_respects_top_k(self):
         """retrieve respects top_k parameter (returns at most top_k entries)."""
@@ -79,11 +81,12 @@ class TestInMemoryPatternMemory:
 
     def test_retrieve_top_k_larger_than_stored(self):
         """retrieve with top_k larger than entries returns all entries."""
+        from core.triton_patterns import TRITON_PATTERNS
         mem = InMemoryPatternMemory()
         mem.store("op_a", "pattern_a", "pass")
         mem.store("op_b", "pattern_b", "fail")
         result = mem.retrieve("context", top_k=100)
-        assert len(result) == 2
+        assert len(result) == len(TRITON_PATTERNS) + 2
 
     def test_is_instance_of_pattern_memory(self):
         """InMemoryPatternMemory is a subclass of PatternMemory."""

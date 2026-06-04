@@ -1,6 +1,7 @@
-"""In-memory pattern memory implementation (core timeline, weeks 2-3)."""
+"""In-memory pattern memory implementation."""
 
 from core.pattern_memory import PatternMemory
+from core.triton_patterns import TRITON_PATTERNS
 
 
 class InMemoryPatternMemory(PatternMemory):
@@ -9,12 +10,11 @@ class InMemoryPatternMemory(PatternMemory):
     Stores all entries in a plain list. retrieve() returns the most recent
     top_k entries. The context parameter is ignored (no filtering).
 
-    This is the primary implementation for weeks 2-3. A RAG implementation
-    (memory_rag.py) will be added in week 4 as a stretch goal.
+    Can be pre-seeded with curated Triton best practices via seed=True.
     """
 
     def __init__(self) -> None:
-        self._entries: list[dict] = []
+        self._entries: list[dict] = list(TRITON_PATTERNS)
 
     def store(self, op_name: str, pattern: str, outcome: str) -> None:
         """Append a pattern entry to the in-memory list.

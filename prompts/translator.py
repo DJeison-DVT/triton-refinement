@@ -120,9 +120,14 @@ def format_wrapper_messages(pytorch_code: str, kernel_code: str) -> list[dict[st
     return [
         {"role": "system", "content":
          "Write a Python wrapper function that launches a Triton kernel. "
-         "The wrapper MUST use the EXACT same function name and parameters as the PyTorch operator. "
-         "Pass tensors directly to the kernel — do NOT use .data_ptr(). "
-         "Output ONLY the function. No imports, no tests, no markdown."},
+         "Rules:\n"
+         "- Function name and parameters MUST match the PyTorch operator exactly\n"
+         "- Pass tensors directly to kernel — do NOT use .data_ptr()\n"
+         "- Allocate output with torch.empty_like(input) using device=input.device\n"
+         "- Call .contiguous() on inputs before passing to kernel\n"
+         "- For scalar 'other' args, fall back to the PyTorch op\n"
+         "- Grid: lambda meta: (triton.cdiv(n, meta['BLOCK']),)\n"
+         "- Output ONLY the function. No imports, no tests, no markdown."},
         {"role": "user", "content":
          f"Kernel:\n{_EXAMPLE_KERNEL}\n\nPyTorch signature: {_EXAMPLE_PYTORCH.split(chr(10))[0]}"},
         {"role": "assistant", "content": _EXAMPLE_WRAPPER},
