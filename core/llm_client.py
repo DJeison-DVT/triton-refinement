@@ -63,11 +63,39 @@ class LLMClient:
             kwargs["extra_body"] = {"guided_grammar": grammar}
 
         # Stream to avoid Modal proxy timeouts on long generations
+        try:
+            return self._stream_chat(kwargs)
+        except Exception as e:
+            if "System role not supported" in str(e):
+                kwargs["messages"] = self._merge_system_role(messages)
+                return self._stream_chat(kwargs)
+            raise
+
+    def _stream_chat(self, kwargs: dict) -> str:
+        """Stream a chat completion and return the full text."""
         chunks = []
         for chunk in self._client.chat.completions.create(**kwargs):
             if chunk.choices and chunk.choices[0].delta.content:
                 chunks.append(chunk.choices[0].delta.content)
         return "".join(chunks)
+
+    @staticmethod
+    def _merge_system_role(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Merge system messages into the first user message."""
+        merged = []
+        system_content = ""
+        for msg in messages:
+            if msg["role"] == "system":
+                system_content += msg["content"] + "\n"
+            else:
+                if system_content and msg["role"] == "user":
+                    merged.append({"role": "user", "content": system_content + msg["content"]})
+                    system_content = ""
+                else:
+                    merged.append(msg)
+        if system_content:
+            merged.insert(0, {"role": "user", "content": system_content})
+        return merged
 
     def complete(
         self,

@@ -246,7 +246,7 @@ def _chat_fix(
         # Subsequent call — append follow-up
         fixer_messages.append(fixer.format_followup(triton_code, error))
 
-    raw = client.generate(fixer_messages, temperature=0.4, max_tokens=2048)
+    raw = client.generate(fixer_messages, temperature=0.4, max_tokens=1024)
 
     # Append assistant response to conversation thread
     fixer_messages.append({"role": "assistant", "content": raw})
@@ -405,7 +405,7 @@ def generate_with_refinement(
         patterns = pattern_memory.retrieve(pytorch_code) if pattern_memory else None
         review_msgs = reviewer.format_messages(triton_code, pytorch_code, patterns=patterns)
         review_response = client.generate(review_msgs)
-        approved = review_response.strip().startswith("APPROVED")
+        approved = "APPROVED" in review_response.strip().split("\n")[0]
         trajectory.append(
             IterationLog(
                 iteration=i,

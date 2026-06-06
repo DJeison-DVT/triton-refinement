@@ -10,15 +10,15 @@
       "role": "headline"
     },
     {
-      "name": "DeepSeek-Coder-6.7B-Instruct",
-      "hf_id": "deepseek-ai/deepseek-coder-6.7b-instruct",
-      "params": "6.7B",
+      "name": "Gemma-2-9B-IT",
+      "hf_id": "google/gemma-2-9b-it",
+      "params": "9B",
       "role": "comparison"
     },
     {
-      "name": "CodeGemma-7B-IT",
-      "hf_id": "google/codegemma-7b-it",
-      "params": "7B",
+      "name": "Phi-3-medium-128k-instruct",
+      "hf_id": "microsoft/Phi-3-medium-128k-instruct",
+      "params": "14B",
       "role": "comparison"
     }
   ],
