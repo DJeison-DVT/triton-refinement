@@ -106,7 +106,12 @@ def main() -> None:
     # --- Detect comparisons from data ---
     data_conditions = sorted(df["condition"].unique().tolist())
     if len(data_conditions) >= 2:
-        condition_a, condition_b = data_conditions[0], data_conditions[-1]
+        # Use config order (single-shot first) rather than alphabetical
+        if config.comparisons:
+            condition_a = config.comparisons[0].condition_a
+            condition_b = config.comparisons[0].condition_b
+        else:
+            condition_a, condition_b = data_conditions[0], data_conditions[-1]
     else:
         condition_a = condition_b = data_conditions[0] if data_conditions else ""
 

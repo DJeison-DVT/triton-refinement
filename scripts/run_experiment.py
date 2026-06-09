@@ -174,7 +174,7 @@ def run_single(
         final_code = ""
         for line in reversed(lines):
             entry = json.loads(line)
-            if entry.get("generation"):
+            if entry.get("generation") and entry.get("stage") != "review":
                 final_code = entry["generation"]
                 break
         predictions.append({"instruction": op.instruction, "predict": final_code})

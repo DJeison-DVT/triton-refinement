@@ -76,7 +76,7 @@ def evaluate(
         encoding="utf-8",
         errors="replace",
         env=env,
-        timeout=60 * 60,  # 1 hour max
+        timeout=3 * 60 * 60,  # 3 hours max
     )
 
     if result.returncode != 0:
